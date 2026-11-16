@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "base_directory": "..",
+  "executable": "../stlload_hub/build/geometry_worker.exe",
+  "call_directory": "runtime/geometry_calls",
+  "timeout_seconds": 120,
+  "max_result_bytes": 2097152,
+  "max_artifact_bytes": 134217728
+}

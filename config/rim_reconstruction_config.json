@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "task_id": "rim_sample_001",
+  "status": "awaiting_baseline_review",
+  "baseline_document": "docs/step_01_baseline.md",
+  "stl_path": "E:/hub_stl/hubmain3processed.stl",
+  "unit": "mm",
+  "axis_hint": null,
+  "axis_policy": {
+    "mode": "estimate_then_verify_or_explicit_override",
+    "pca_use": "initialization_only",
+    "allow_unvalidated_axis_for_final_export": false,
+    "require_axis_confirmation_before_final_validation": true
+  },
+  "target": {
+    "type": "rim_revolved_body",
+    "radial_range": null,
+    "axial_range": null,
+    "boundary_definition": "complete_material_profile_of_outer_rim_including_inner_and_outer_walls_and_both_axial_ends",
+    "spoke_junction_policy": "record_ambiguous_boundary_and_require_confirmation_before_final_reconstruction",
+    "excluded_features": ["spokes", "mounting_disc", "bolt_holes", "valve_hole"],
+    "scope_confirmed": false
+  },
+  "tolerances": {
+    "profile_fit": 0.08,
+    "reconstruction": 0.08
+  },
+  "inspection_angles_degrees": [0, 30, 60, 90, 120, 150],
+  "inspection_angles_confirmed": false,
+  "output_formats": ["STEP", "FCStd"],
+  "output_directory": "tasks/rim_sample_001/exports"
+}

@@ -1,0 +1,84 @@
+# 此文件用于忽略自动生成的文件
+# ----------------------------------------------------------------------------
+
+*~
+*.autosave
+*.a
+*.core
+*.moc
+*.o
+*.obj
+*.orig
+*.rej
+*.so
+*.so.*
+*_pch.h.cpp
+*_resource.rc
+*.qm
+.#*
+*.*#
+core
+!core/
+tags
+.DS_Store
+.directory
+*.debug
+Makefile*
+*.prl
+*.app
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+Thumbs.db
+*.res
+*.rc
+/.qmake.cache
+/.qmake.stash
+**/.qmlls.ini
+
+# Qt Creator 生成的文件
+*.pro.user*
+*.qbs.user*
+CMakeLists.txt.user*
+
+# XEmacs 临时文件
+*.flc
+
+# Vim 临时文件
+.*.swp
+
+# Visual Studio 生成的文件
+*.ib_pdb_index
+*.idb
+*.ilk
+*.pdb
+*.sln
+*.suo
+*.vcproj
+*vcproj.*.*.user
+*.ncb
+*.sdf
+*.opensdf
+*.vcxproj
+*vcxproj.*
+
+# MinGW 生成的文件
+*.Debug
+*.Release
+
+# Python 字节码
+*.pyc
+
+# 二进制文件
+# --------
+*.dll
+*.exe
+
+# 存放生成文件的目录
+.moc/
+.obj/
+.pch/
+.rcc/
+.uic/
+/build*/
+/.qtcreator/

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "operation": "compute_sections",
+  "task_id": "rim_sample_001",
+  "unit": "mm",
+  "stl_path": "E:/hub_stl/hubmain3processed.stl",
+  "axis": {
+    "origin": [0, 0, 0],
+    "direction": [1, 0, 0]
+  },
+  "radial_reference": [0, 1, 0],
+  "angles_degrees": [0, 30, 60, 90, 120, 150],
+  "output_directory": "../../build_step03_results/sections"
+}

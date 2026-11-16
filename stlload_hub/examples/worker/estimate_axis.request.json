@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "operation": "estimate_axis",
+  "task_id": "rim_sample_001",
+  "unit": "mm",
+  "stl_path": "E:/hub_stl/hubmain3processed.stl"
+}

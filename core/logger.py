@@ -1,0 +1,99 @@
+"""Centralized logging for CadAgent FreeCAD workbench.
+
+Writes to:
+  1. FreeCAD.Console (when available)
+  2. Log file: <FreeCAD user data>/CadAgent/cadagent.log
+     Fallback: <temp>/CadAgent/cadagent.log
+"""
+from __future__ import annotations
+
+import datetime
+import logging
+import os
+import sys
+import tempfile
+
+
+def _get_log_dir() -> str:
+    """Preferred log dir: <CadAgent data root>/log (S4-C9). No side effects
+    here — directory creation and failure handling live in _setup_file_logger."""
+    from core.paths import subdir
+    return subdir("log")
+
+
+def _fallback_log_dir() -> str:
+    """Fallback log dir when the install dir is not writable."""
+    return os.path.join(tempfile.gettempdir(), "CadAgent")
+
+
+def _setup_file_logger() -> logging.Logger:
+    """Attach a file handler, trying the install dir then the temp dir.
+
+    Never raises: with an unwritable install location (e.g. Program Files)
+    the workbench must still load — degrade to console-only logging.
+    """
+    logger = logging.getLogger("cadagent")
+    logger.setLevel(logging.DEBUG)
+    if logger.handlers:
+        return logger
+    for log_dir in (_get_log_dir(), _fallback_log_dir()):
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            fh = logging.FileHandler(
+                os.path.join(log_dir, "cadagent.log"), encoding="utf-8"
+            )
+        except OSError:
+            continue
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        logger.addHandler(fh)
+        return logger
+    # No writable location found — console-only. Import must not crash.
+    return logger
+
+
+_file_logger = _setup_file_logger()
+
+
+def _log(msg: str, level: str = "warning", *, quiet: bool = False) -> None:
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    full = f"[{ts}] {msg}"
+    # Console — info and error levels; warning skips to avoid FreeCAD Report popup spam
+    if not quiet and level in ("info", "error"):
+        try:
+            import FreeCAD
+            if level == "error":
+                FreeCAD.Console.PrintError(f"[CadAgent] {full}\n")
+            else:
+                FreeCAD.Console.PrintMessage(f"[CadAgent] {full}\n")
+        except (ImportError, AttributeError):
+            prefix = {"error": "ERROR", "info": "INFO"}.get(level, "LOG")
+            print(f"[CadAgent] {prefix}: {full}", file=sys.stderr)
+    # File
+    log_level = {"error": logging.ERROR, "warning": logging.WARNING, "info": logging.INFO}.get(level, logging.INFO)
+    _file_logger.log(log_level, msg)
+
+
+def log_info(msg: str) -> None:
+    _log(msg, "info")
+
+
+def log_warning(msg: str) -> None:
+    _log(msg, "warning")
+
+
+def log_error(msg: str) -> None:
+    _log(msg, "error")
+
+
+def log_quiet(msg: str) -> None:
+    """Log to file only — no FreeCAD Console output.
+
+    Use this for expected Agent behavior (tool failures, auto-fix retries)
+    to avoid triggering FreeCAD's Report view popup. The information is
+    already shown inline in the chat panel via _append_tool_msg().
+    """
+    log_level = logging.INFO
+    _file_logger.log(log_level, msg)

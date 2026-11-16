@@ -1,0 +1,239 @@
+"""Build the tutorial's source-backed chapter 2.2 notes; does not edit application code."""
+from pathlib import Path
+import textwrap
+import html
+import re
+
+ROOT = Path(__file__).resolve().parents[1]
+parts = ["#### 2.2 核心代码逐项解读\n\n下面按程序实际调用顺序阅读。代码均摘自当前源码；省略的上下文会明确注明，片段用于理解，不应独立复制运行。`self` 表示当前对象，`session` 保存对话，`action` 是下一步动作，`ex` 是一次实际工具执行记录。\n"]
+
+def item(title, path, start, end, explanation):
+    source = (ROOT / path).read_text(encoding='utf-8-sig')
+    begin = source.index(start)
+    finish = source.index(end, begin) if end else len(source)
+    # Start at the containing line, retaining real source indentation.
+    begin = source.rfind('\n', 0, begin) + 1
+    line = source[:begin].count('\n') + 1
+    snippet = textwrap.dedent(source[begin:finish]).rstrip()
+    parts.append(f"##### {title}\n\n源码：`{path}`，片段起始行 {line}。\n\n```python\n{snippet}\n```\n\n{explanation.strip()}\n")
+
+item('① InitGui.py：让 FreeCAD 找到工作台和面板', 'InitGui.py',
+     '    def Activated(self):', '\n\n\n', '''
+**这段代码做什么：**用户选择 CadAgent 工作台时，FreeCAD 调用 `Activated()`，它创建或重新显示右侧对话面板。
+
+- 方法内部导入 `AgentPanel`，真正的交互入口在 `ui/panel.py`。这里使用局部导入也与 FreeCAD 通过 `exec()` 加载入口脚本的作用域有关。
+- `hasattr(...)` 和空值检查避免每切换一次工作台就创建一个新面板。
+- `addDockWidget(...)` 把面板挂到主窗口右侧；`show()` 显示，`raise_()` 将其提到前面。
+
+**在轮辋任务中：**这里只打开界面，还没有调用模型，也没有读取 STL。面板不出现时先查这个入口及插件路径，不能先归因于 API 密钥。
+''')
+item('② ui/panel.py：把状态机动作变成真实操作', 'ui/panel.py',
+     '    def _execute_action(self, action: LoopAction):', '    def _start_llm_call', '''
+**这段代码做什么：**`AgentLoop` 只返回动作，面板按 `action.kind` 执行。
+
+- `CALL_LLM`：启动模型调用；`EXECUTE_TOOLS`：进入工具队列；`FINISH`：整理最终结果并恢复界面。
+- `action.system_message` 是给用户看的运行提示；`self._loop.mode` 是模型调用协议，不是轮辋/通用任务类型。
+- 这个分工把“决定做什么”和“调动线程、控件、FreeCAD 去做”分开，便于独立测试状态机。
+
+**沿调用链继续读：**面板发送任务时构造 `AgentController(self._session)`，然后构造带 `workflow=self._workflow` 的 `AgentLoop`，再调用 `start(text)`。模型线程的 `streamDone` 信号接到 `_on_stream_done()`，后者把响应交还给 Loop。
+''')
+item('③ agent/controller.py：保存会话和任务结果', 'agent/controller.py',
+     '    def __init__(self, session: ChatSession):', None, '''
+**这段代码做什么：**控制器是共享状态容器，不负责循环推理和工具路由。
+
+- `self.session = session` 使用已有会话对象，因此后续轮次可以读取前面的工具结果。
+- `AgentResult()` 初始化本轮结果，包含 `success`、`summary`、`iterations`、`errors` 和 `tool_calls_log` 等字段。
+- `_mode="auto"` 是协议检测初值。`stop()` 在控制器上设置停止标记，但实际循环还由 `AgentLoop.request_stop()` 和界面中断处理协作完成，不能认为这一行就能强制停止 C++/FreeCAD 内核。
+
+**容易误读：**文件注释中还保留“状态机在 panel.py”的历史表述；当前纯逻辑状态机已经在 `agent/loop.py`，panel 负责调度。
+''')
+item('④ agent/loop.py 的 start()：任务怎样进入模型会话', 'agent/loop.py',
+     '    def start(self, user_text: str)', '    #收集当前 Agent', '''
+**按顺序理解：**
+
+1. `_build_context()` 获取已有上下文。
+2. 根据 `_workflow` 选提示词。完整轮辋模式会覆盖为 `RIM_RECONSTRUCTION_SYSTEM_PROMPT`，避免模型沿通用 CAD 思路生成任意几何脚本。
+3. `replace("{context}", ctx)` 将上下文放进提示词。
+4. `set_system_prompt()` 设置规则；`add_user_message()` 记录用户原话。
+5. `prepare_llm_call()` 返回第一次模型请求动作。
+
+**关键点：**这里不是直接发 HTTP 请求。它只是准备动作，真正的网络执行由面板启动的后台线程负责。
+''')
+item('⑤ prepare_llm_call()：选择模型本轮可见的工具', 'agent/loop.py',
+     '        rim_names = {', '        original_count = len(request_messages)', '''
+**这是 `prepare_llm_call()` 的中间片段，省略了停止与迭代上限判断。**
+
+- `rim_names` 收集轮辋工具名，用于把通用工具和轮辋工具分开。
+- `_rim_pipeline is not None` 表示完整轮辋流程；它将声明限制为 `RIM_RECONSTRUCTION_TOOL_NAMES`，当前实际有七项，包含可选修补工具。
+- `tools` 是要随模型请求发送的 JSON Schema，不是函数对象列表。
+- `session.get_messages()` 取得消息列表副本；追加当前 `request_context()` 后，模型会读到真实产物路径、当前可执行工具和失败状态。
+
+**为什么要每轮提供程序状态：**模型可能忘记上一轮返回的目录，或者误把“前置条件未满足”说成“工具未安装”。动态状态用于减少这类错误，最终仍由执行门禁检查。
+
+该函数随后调用 `trim_messages()`、`token_summary()`，最后返回 `LoopAction(kind=CALL_LLM, messages=messages, tools=tools, ...)`。
+''')
+item('⑥ handle_stream_done()：解析模型响应，而不是执行模型文字', 'agent/loop.py',
+     '            calls = assistant_msg.get("tool_calls") or []', '            if finish_reason != "stop":', '''
+**这是轮辋响应分支的片段。**`assistant_msg` 是模型最终响应的消息对象。
+
+- 读取 `tool_calls`；纯自然语言里出现工具名，不算工具调用。
+- 完整流程要求一次只有一个工具，确保下一步依赖真实返回结果。
+- 检查调用名属于已声明轮辋工具；然后返回 `EXECUTE_TOOLS`，实际计算交给面板。
+
+**这里还没完成所有验证：**`RimPipeline.validate_call()` 还会在执行路径中检查本阶段资格和产物引用。若模型只回复“已经完成”，Loop 还会走 `_check_quality_gate()`；未实际建成实体就不能报完整流程成功。
+''')
+item('⑦ 工具声明：告诉模型参数应该怎样填写', 'agent/tool_defs.py',
+     '    {"type": "function", "function": {"name": "rim_estimate_axis",', '    {"type": "function", "function": {"name": "rim_process_sections_auto",', '''
+**这是工具列表中的一个字典项，不是独立 Python 程序。**
+
+- `name` 是模型请求调用时必须使用的精确名称。
+- `description` 解释用途及限制：轴线来自 C++ 候选，不是精度认证。
+- `parameters.type="object"` 表示参数是 JSON 对象；`properties` 描述字段类型。
+- `required` 要求必须有 `inspection_call_directory`；`additionalProperties=False` 声明不接收其他参数。
+
+**输入示意：**`{"inspection_call_directory": "上一步真实返回的绝对目录"}`。这是数据引用，不应把假定的轴坐标塞进参数。Schema 帮助模型正确生成参数，但不能代替服务层真正的参数、路径和身份检查。
+''')
+item('⑧ 工具注册：把声明名称接到 Python 函数', 'agent/tools.py',
+     'from rim_reconstruction.tool_handlers import rim_build_revolution', '\n# 轮辋逆向扩展：自主调用', '''
+**核心是最后一行：**`register_tool("rim_build_revolution", rim_build_revolution)` 把字符串名称和处理函数关联起来。
+
+字符串给模型和路由器使用，函数对象给 Python 调用。只有声明而没有注册，模型能提出调用，程序仍会报 Unknown tool。只注册而不声明，模型通常也不知道可以使用它。
+
+`rim_build_revolution` 的 handler 再调用 CAD 服务和 builder。它会修改 FreeCAD 文档，必须走主线程；其他耗时截面/拟合工具可交给 `RimToolWorker`。
+''')
+item('⑨ agent/tool_dispatch.py：按工具名称分发', 'agent/tool_dispatch.py',
+     'def dispatch_tool(name: str, args_json: str)', '        # 轮辋逆向扩展：同时识别', '''
+**这是路由函数的前半段，后面省略了成功/失败日志和异常转换。**
+
+- `_TOOL_MAP.get(name)` 查注册表；查不到就返回明确错误，不能假装执行成功。
+- `args_json` 是 JSON 字符串；`handler(args_json)` 由对应处理器完成解析、校验和业务计算。
+- `try` 用于捕获执行异常；函数后续会将异常转成错误结果，而不是让面板直接崩溃。
+
+**典型路径：**`rim_estimate_axis` → 对应 handler → `estimate_model_axis()` → `CppWorkerAdapter.run()` → C++ Worker → 校验后的 JSON 结果。
+''')
+item('⑩ core/llm_client.py：把会话和工具规范发送给模型', 'core/llm_client.py',
+     'def _make_request(payload: dict)', '\n#调用支持工具的', '''
+**逐项看请求：**
+
+- 地址由 `API_BASE_URL` 拼上 `/chat/completions`；因此根地址填错会导致 404 或调用到错误接口。
+- `json.dumps(payload).encode("utf-8")` 将 Python 字典转为网络发送的 JSON 字节；此 Request 含 data，因此用于 POST。
+- `Content-Type` 告诉服务按 JSON 解码；`Authorization` 从运行时配置取密钥，文档不提供实际密钥。
+
+此函数只构造 Request。`_urlopen_with_retry()` 负责连接、超时和部分重试；`call_llm_streaming()` 负责流式读取，见下一段。
+''')
+item('⑪ call_llm_streaming()：从流式响应中拿到数据块', 'core/llm_client.py',
+     '    payload: dict = {', '\n\n', '''
+**这是流式函数的请求载荷片段。**
+
+- `model` 选择模型；`messages` 是角色化会话历史。
+- `stream=True` 请求逐块返回。`max_tokens` 限制本次输出，不能当作模型总上下文大小。
+- `if tools` 时加入工具 Schema 和 `tool_choice="auto"`，允许模型自行决定调用哪个工具。
+
+函数后续读取 SSE 的 `data:` 行，遇到 `[DONE]` 结束，否则将每行 JSON `yield` 给线程消费。界面侧 `_LlmCallThread` 累积文本与分段工具参数，最终发出 `streamDone`；Loop 接收的是整理后的完整响应，不是将每个字直接拿去执行。
+''')
+item('⑫ prompts.py 与 references.py：固定规则和按需提醒', 'agent/loop.py',
+     '        if self._iteration == 0:', '        # --- Phase-aware: quality passed', '''
+**这里展示提示词如何被使用，而不是把整份长提示词复制出来。**
+
+- 第一次执行加 `REF_FIRST_ITERATION`，提醒通用 CQ API 的常见用法。
+- 质量失败时加 `REF_QUALITY_FAILURE`，帮助模型理解失败原因。
+- 近期至少两次错误时加 `REF_REPAIR_LOOP`，要求改变修复策略。
+
+这些常量定义在 `agent/references.py`，基础角色、工具使用约定等定义在 `agent/prompts.py`。完整轮辋专用提示词明确要求自动检查与估轴、显式规划角度、禁止编造点列和未经验证的精度声明。
+
+**适用范围很重要：**`_build_context()` 在轮辋模式会提前返回已有上下文，所以这里的通用 CQ 检查清单不会照搬进轮辋流程。提示词只是指导；阶段是否通过要看程序和几何结果。
+''')
+item('⑬ core/session.py：让下一轮模型看见上一步真实结果', 'core/session.py',
+     '    def add_tool_result(self, tool_call_id: str, result: str):', '    def get_last_assistant_text', '''
+**一次工具反馈有三个关键字段：**`role="tool"` 表示来源是工具，`tool_call_id` 将结果与模型之前提出的调用绑定，`content` 保存实际结果文本/JSON。
+
+例如模型请求 ID 为 call_A 的估轴工具，程序应把真实结果绑定到 call_A，而不是新造一个 ID。下一轮模型因此能使用工具返回的 `call_directory`。
+
+`with self._lock` 保护多线程访问；`get_messages()` 返回列表副本，避免请求侧追加状态时直接改变会话列表。这里是列表层面的浅复制，不能理解为所有嵌套对象都深复制了。
+
+**还需要闭环：**`AgentLoop.handle_tool_results()` 先调用 `self._rim_pipeline.record(ex)` 更新流程状态，再用 `session.add_tool_result(ex.tool_id, result_text)` 写回消息，最后准备下一次模型调用。缺少反馈消息，模型就无法依据真实结果迭代。
+''')
+item('⑭ core/token_budget.py：控制越聊越长的上下文', 'core/token_budget.py',
+     '    if max_tokens is None:', '    def _tail_size():', '''
+**这是 `trim_messages()` 的开头。**默认预算从配置读取；空历史直接返回；估计未超限时返回列表副本，超限时才创建待裁剪副本。
+
+后续策略先压缩中间的大段工具/助手内容，再把旧 `assistant(tool_calls)` 与连续 tool 结果作为组合删除，避免留下有工具结果却找不到对应调用的历史。还会使用检查点压缩和必要的内容截断，尽量保留 system 与近期信息。
+
+估计是近似值，并结合供应商 usage 做校准，不是精确 tokenizer。轮辋把完整点列留在本地、只发摘要和路径，也是在源头降低上下文体积。
+''')
+item('⑮ core/quality.py：把几何异常转为可操作的检查结果', 'core/quality.py',
+     '        if code == "NO_SOLID":', '        elif code == "COMPOUND_SHAPE":', '''
+**这是 `_map_topology_issues()` 的部分分支。**它使用稳定错误码识别问题，而不是靠匹配一段提示文字。
+
+- `NO_SOLID` 表示没有可用实体，分类为 fail，并附带建模建议。
+- `MULTI_SOLID` 表示出现多个实体，同样给出失败分类及建议。
+- 最终 `QualityReport` 汇总 `passed`、`severity`、`issues` 和 `summary`。模型看到的应是这种具体反馈，而不是只有“模型不对”。
+
+这些片段中的修复建议面向通用 CAD 建模，不能直接作为轮辋材料边界修补策略。完整轮辋模式的 `_check_quality_gate()` 会委托 `RimPipeline.completion()`，要求本轮实体步骤真实通过；轴线和扫描重建误差仍须另验。
+''')
+item('⑯ core/snapshot.py：执行出错后怎样恢复文档', 'core/snapshot.py',
+     '        if hasattr(doc, "saveCopy"):', '        self._cleanup_old()', '''
+**这是快照保存方法中的核心片段，文件名与目录在此前已生成。**
+
+- 优先 `saveCopy()`，避免改变当前文档的正式文件路径和标签。
+- 兼容分支调用 `saveAs()` 后，恢复原来的 FileName/Label。
+- `_stacks.setdefault(doc.Name, []).append(...)` 按文档保存快照记录，避免多个文档的撤销互相混淆。
+
+`restore_latest_with_entry()` 在恢复失败时把记录放回栈，成功才删除对应快照。快照服务主要支撑通用 `execute_code`/`undo_last`；轮辋 builder 还使用自己的 FreeCAD 文档事务回滚。它们不是同一套机制，也不是无限历史备份，应另行保存正式 FCStd。
+''')
+item('⑰ core/session_store.py：退出 FreeCAD 后怎样保留聊天历史', 'core/session_store.py',
+     '            data = session.to_dict()', '            return path', '''
+**这段是 `SessionStore.save()` 的核心。**`to_dict()` 将会话转成可序列化数据；先写 `.tmp` 再 `os.replace()`，降低写到一半留下损坏正式 JSON 的风险。
+
+消息历史持久化与几何模型保存不同：会话 JSON 不能代替 FCStd，单独一份拟合摘要也不能代替完整 Worker 调用目录。`core/paths.py` 统一决定 sessions、snapshots、log 等用户数据位置。
+''')
+
+parts.append('''##### 把这些文件串起来：一次真实调用的阅读顺序
+
+```text
+InitGui.Activated() → AgentPanel
+  → 创建 Controller(session) 与 AgentLoop(workflow)
+  → Loop.start() → prepare_llm_call() → CALL_LLM
+  → Panel._execute_action() → 后台 _LlmCallThread
+  → llm_client.call_llm_streaming() → 模型返回 tool_calls
+  → Panel._on_stream_done() → Loop.handle_stream_done()
+  → EXECUTE_TOOLS → 阶段校验 → 后台算法/主线程 CAD
+  → ToolExecution → RimPipeline.record() + ChatSession.add_tool_result()
+  → 下一轮 CALL_LLM，或质量门禁通过后 FINISH
+```
+
+**建议练习：**给一次 `rim_estimate_axis` 调用找到四样东西：声明中的必填参数、注册入口、实际服务函数、返回结果在下一轮消息中的位置。能沿这四处追踪，就理解了这个 Agent 的工具闭环。阅读业务主链时先关注这些字段和分支，不必先弄懂所有 Qt 样式、日志或完整 B 样条求解细节。
+''')
+
+section = '\n'.join(parts)
+target = ROOT / 'docs/轮辋逆向重建Agent_从原理到复现.md'
+original = target.read_text(encoding='utf-8')
+start = original.index('#### 2.2 核心代码逐项解读') if '#### 2.2 核心代码逐项解读' in original else original.index('### 2.3 工具调用如何接到真实函数')
+end = original.index('### 2.3 工具调用如何接到真实函数', start)
+target.write_text(original[:start] + section + '\n' + original[end:], encoding='utf-8')
+(ROOT / 'docs/2.2_Agent核心代码逐项解读.md').write_text(section, encoding='utf-8')
+
+# Simple HTML for browser clipboard: only headings, paragraphs, lists, and fenced code.
+out = []
+code = []
+in_code = False
+for line in section.splitlines():
+    if line.startswith('```'):
+        if in_code:
+            out.append('<pre><code>' + html.escape('\n'.join(code)) + '</code></pre>')
+            code = []
+        in_code = not in_code
+    elif in_code:
+        code.append(line)
+    elif line.strip():
+        escaped = html.escape(line)
+        escaped = re.sub(r'`([^`]+)`', r'<code>\1</code>', escaped)
+        escaped = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', escaped)
+        if line.startswith('##### '):
+            out.append('<h4>' + escaped[6:] + '</h4>')
+        elif line.startswith('#### '):
+            out.append('<h3>' + escaped[5:] + '</h3>')
+        else:
+            out.append('<p>' + escaped + '</p>')
+(ROOT / 'docs/2.2_Agent核心代码逐项解读.html').write_text('<html><body>' + '\n'.join(out) + '</body></html>', encoding='utf-8')
+print('Updated tutorial and generated chapter Markdown/HTML:', len(section), 'characters')
