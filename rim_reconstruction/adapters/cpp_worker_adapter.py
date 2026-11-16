@@ -245,7 +245,7 @@ class CppWorkerAdapter:
             self.call_root.mkdir(parents=True, exist_ok=True)
             call = Path(tempfile.mkdtemp(prefix="call-", dir=self.call_root))
             # 两种截面操作都输出独立 JSON 产物，统一隔离，避免读到上次调用的数据。
-            if payload["operation"] in SECTION_OPERATIONS:
+            if payload["operation"] in (*SECTION_OPERATIONS, "fit_window_surface", "build_window_cutter"):
                 payload["output_directory"] = str(call / "geometry")
             request_path, result_path = call / "request.json", call / "result.json"
             encoded = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"

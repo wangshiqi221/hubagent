@@ -3,7 +3,10 @@ import json
 
 
 class RimPipeline:
-    def __init__(self):
+    def __init__(self, require_spokes=False):
+        self.require_spokes = require_spokes
+        self.spoke_solid = None
+        self.window_artifacts = []
         self.inspection = None
         self.axis = None
         self.section = None
@@ -14,6 +17,8 @@ class RimPipeline:
 
     def next_step(self):
         """仅在已有成功输入且无真实工具错误时提示推进，不掩盖失败或无候选。"""
+        if self.solid and self.require_spokes and not self.spoke_solid and not self.last_tool_failed:
+            return "rim_analyze_window_regions" if not self.window_artifacts else None
         if self.last_tool_failed or not self.inspection or self.solid:
             return None
         if not self.axis:
@@ -36,7 +41,10 @@ class RimPipeline:
                                    ("fit_path", self.fit, "result_path")):
             if result:
                 references[label] = result.get(key)
+        if self.solid:
+            references.update(document_name=self.solid.get("document_name"), blank_name=self.solid.get("body_name"))
         return {"executable_tools": sorted(self.allowed_tools()), "next_step": self.next_step(),
+                "window_artifacts": self.window_artifacts[-64:],
                 "artifacts": references, "last_tool_failed": self.last_tool_failed}
 
     def allowed_tools(self):
@@ -45,6 +53,9 @@ class RimPipeline:
             names.add("rim_estimate_axis")
         if self.axis:
             names.update(("rim_process_sections_auto", "rim_transverse_sections"))
+            from rim_reconstruction.window_tools import BACKGROUND, MAIN
+            names.update(BACKGROUND)
+            names.update(MAIN)
         if self.section:
             names.update(("rim_analyze_candidates", "rim_repair_sections"))
         if self.analysis and self.analysis.get("analysis_status") == "candidates_found":
@@ -76,6 +87,9 @@ class RimPipeline:
 
     def record(self, execution):
         name = execution.tool_name
+        from rim_reconstruction.window_tools import BACKGROUND
+        if name in BACKGROUND or name in ("rim_import_window_cutter", "rim_create_cutter_pattern", "rim_validate_window_pattern"):
+            self.spoke_solid = None
         self.last_tool_failed = True
         # 上游重试立即撤销下游状态，包括失败和取消，不能复用旧实体报成功。
         if name == "rim_inspect_stl":
@@ -90,11 +104,18 @@ class RimPipeline:
             self.fit = self.solid = None
         elif name == "rim_build_revolution":
             self.solid = None
+        if name == "rim_cut_spoke_windows" or name in ("rim_inspect_stl", "rim_estimate_axis", "rim_build_revolution"):
+            self.spoke_solid = None
         try:
             data = json.loads(execution.result)
             if execution.is_error or not isinstance(data, dict) or data.get("status") != "success":
                 return
             self.last_tool_failed = False
+            if name.startswith("rim_"):
+                refs={k:data[k] for k in ("analysis_path","surface_report","cutter_report","document_name","cutter_name","pattern_name","object_name") if data.get(k)}
+                if refs:self.window_artifacts.append({"tool":name,**refs})
+            if name == "rim_cut_spoke_windows" and data.get("operation") == "cut_spoke_windows" and data.get("solid_count") == 1 and data.get("volume_mm3", 0) > 0:
+                self.spoke_solid = data
             if (name == "rim_inspect_stl" and data.get("operation") == "inspect_stl"
                     and data.get("call_directory") and data.get("task_id")):
                 self.inspection = data
@@ -126,5 +147,7 @@ class RimPipeline:
             return
 
     def completion(self):
+        if self.require_spokes:
+            return self.spoke_solid is not None, "辐条重建必须成功完成窗口阵列布尔切割；毛坯或切削体不能替代最终结果。"
         return (self.solid is not None,
                 "完整重建要求本轮成功建立草图和回转单实体；截面、分析或拟合成功不能替代。")

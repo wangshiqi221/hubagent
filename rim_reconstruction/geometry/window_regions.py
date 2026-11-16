@@ -1,0 +1,123 @@
+"""Window hypotheses and reproducible four-wall regions from transverse loops.
+
+These are candidates, not certified semantic faces. Degenerate/missing side
+supports are reported and cannot be promoted to cutting solids.
+"""
+import math
+import numpy as np
+from scipy.spatial import cKDTree
+from ..adapters.cpp_worker_adapter import check_cancelled
+
+
+def _inside(point, polygon):
+    x,y=point;p=np.asarray(polygon);q=np.roll(p,-1,axis=0)
+    hit=(p[:,1]>y)!=(q[:,1]>y)
+    return bool(np.count_nonzero(hit & (x < (q[:,0]-p[:,0])*(y-p[:,1])/(q[:,1]-p[:,1]+1e-300)+p[:,0]))%2)
+
+
+def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15):
+    candidates=[]
+    for section in sections:
+        loops=[c for c in section['contours'] if c['closed'] and c['area_mm2'] and c['area_mm2']>outer_radius**2*5e-4]
+        for loop in loops:
+            p=np.asarray(loop['points_uv']);center=p.mean(axis=0);radius=float(np.linalg.norm(center))
+            # Nesting, not just loop area, distinguishes windows from material islands.
+            nesting=sum(_inside(p[0],other['points_uv']) for other in loops if other is not loop)
+            if nesting%2!=1 or not minimum_radius_ratio*outer_radius<radius<.95*outer_radius:continue
+            radial=center/radius;tangent=np.array([-radial[1],radial[0]])
+            local=np.c_[p@radial,p@tangent]
+            scaled=(local-local.mean(axis=0))/np.maximum(np.ptp(local,axis=0),1e-9)
+            anchors=[int(np.argmax(scaled@direction)) for direction in
+                     (np.array([-1,-1]),np.array([-1,1]),np.array([1,1]),np.array([1,-1]))]
+            if len(set(anchors))!=4:
+                anchors=[int(np.argmin(local[:,0])),int(np.argmax(local[:,1])),int(np.argmax(local[:,0])),int(np.argmin(local[:,1]))]
+            if len(set(anchors))!=4:continue
+            anchors=sorted(anchors)
+            arcs=[]
+            for start,end in zip(anchors,anchors[1:]+[anchors[0]+len(p)]):
+                ids=np.arange(start,end+1)%len(p);arcs.append(p[ids].tolist())
+            angle=float(math.degrees(math.atan2(center[1],center[0]))%360)
+            candidates.append({'depth_mm':section['depth_mm'],'angle_degrees':angle,
+                'radius_mm':radius,'area_mm2':loop['area_mm2'],'radial_span_mm':float(np.ptp(local[:,0])),
+                'tangential_span_mm':float(np.ptp(local[:,1])), 'boundary_uv':p.tolist(),
+                'side_arcs_uv':arcs,'frame':section['frame']})
+    # Keep the layer with the most complete distinct windows. Other layers are
+    # used as independent positional evidence, never silently merged geometry.
+    depths=sorted({c['depth_mm'] for c in candidates})
+    if not depths:return []
+    best=max(depths,key=lambda z:(sum(c['depth_mm']==z for c in candidates),-abs(z)))
+    chosen=sorted([c for c in candidates if c['depth_mm']==best],key=lambda c:c['angle_degrees'])
+    for i,c in enumerate(chosen):
+        c['window_id']=f'window_{i+1:03d}'
+        c['supporting_depths_mm']=sorted({other['depth_mm'] for other in candidates
+            if min(abs(other['angle_degrees']-c['angle_degrees']),360-abs(other['angle_degrees']-c['angle_degrees']))<max(2.,90/max(1,len(chosen)))
+            and abs(other['radius_mm']-c['radius_mm'])<.15*outer_radius})
+    return chosen
+
+
+def classify_pattern(windows, type_count=2):
+    """Deterministic descriptor clustering and explicit angular-instance lists."""
+    if len(windows)<max(2,type_count):return {'status':'needs_review','reason':'Insufficient windows','groups':[]}
+    values=np.asarray([[w['area_mm2'],w['radial_span_mm'],w['tangential_span_mm'],w['radius_mm']] for w in windows])
+    scale=np.maximum(np.mean(np.abs(values),axis=0),1e-9);features=values/scale
+    seeds=[0]
+    while len(seeds)<type_count:
+        distances=np.min(np.sum((features[:,None]-features[seeds][None])**2,axis=2),axis=1)
+        for i in seeds:distances[i]=-1
+        seeds.append(int(np.argmax(distances)))
+    centers=features[seeds].copy();labels=np.zeros(len(windows),dtype=int)
+    for _ in range(20):
+        labels=np.argmin(np.sum((features[:,None]-centers[None])**2,axis=2),axis=1)
+        if any(not np.any(labels==i) for i in range(type_count)):
+            return {'status':'needs_review','reason':'Requested types are not separable by observed descriptors','groups':[]}
+        updated=np.asarray([features[labels==i].mean(axis=0) for i in range(type_count)])
+        if np.allclose(updated,centers):break
+        centers=updated
+    groups=[]
+    for i in range(type_count):
+        members=[w for w,label in zip(windows,labels) if label==i]
+        representative=min(members,key=lambda w:(-len(w['supporting_depths_mm']),w['angle_degrees']))
+        angles=sorted(w['angle_degrees'] for w in members)
+        gaps=np.diff(angles+[angles[0]+360])
+        groups.append({'type_id':chr(ord('A')+i),'window_ids':[w['window_id'] for w in members],
+            'representative_window_id':representative['window_id'],'angles_degrees':angles,
+            'relative_angles_degrees':[(a-representative['angle_degrees'])%360 for a in angles],
+            'period_degrees':float(360/len(angles)),
+            'equal_spacing_max_error_degrees':float(np.max(np.abs(gaps-360/len(angles))))})
+    return {'status':'hypotheses','groups':groups,'requires_3d_validation':True,
+        'warning':'Types and angular phases are geometric hypotheses; verify imported cutters before cutting.'}
+
+
+def select_side_regions(triangles, window, axis, band_mm, *, normal_axis_limit=.85, cancel_event=None):
+    """Restricted local wall candidates; interior triangle samples stay traceable."""
+    tri=np.asarray(triangles);origin=np.asarray(axis['origin']);direction=np.asarray(axis['direction'],dtype=float);direction/=np.linalg.norm(direction)
+    frame=window['frame'];u=np.asarray(frame['u_direction']);v=np.asarray(frame['v_direction'])
+    centers=tri.mean(axis=1);delta=centers-origin
+    uv=np.c_[delta@u,delta@v];depth=delta@direction
+    normals=np.cross(tri[:,1]-tri[:,0],tri[:,2]-tri[:,0]);length=np.linalg.norm(normals,axis=1)
+    good=length>1e-12;alignment=np.ones(len(tri));alignment[good]=np.abs(normals[good]@direction)/length[good]
+    boundary=np.asarray(window['boundary_uv']);low=boundary.min(axis=0)-band_mm;high=boundary.max(axis=0)+band_mm
+    mask=good&(alignment<normal_axis_limit)&np.all((uv>=low)&(uv<=high),axis=1)&(np.abs(depth-window['depth_mm'])<=max(2*band_mm,.25*window['radial_span_mm']))
+    ids=np.flatnonzero(mask);regions=[]
+    arcs=[]
+    for values in window['side_arcs_uv']:
+        a=np.asarray(values);parts=[]
+        for first,last in zip(a[:-1],a[1:]):
+            count=max(1,int(np.ceil(np.linalg.norm(last-first)/(band_mm*.25))))
+            if count>100000:raise ValueError('Selection band too small for boundary sampling')
+            parts.append(first+(last-first)*np.linspace(0,1,count,endpoint=False)[:,None])
+        arcs.append(np.vstack(parts+[a[-1:]]))
+    if not len(ids):return []
+    distances=np.column_stack([cKDTree(a).query(uv[ids])[0] for a in arcs])
+    nearest=np.argmin(distances,axis=1)
+    for side in range(4):
+        check_cancelled(cancel_event)
+        selected=ids[(nearest==side)&(distances[:,side]<=band_mm)]
+        # Exclude corners, where fillets and two walls meet.
+        if len(selected):
+            endpoint_distance=np.minimum(np.linalg.norm(uv[selected]-arcs[side][0],axis=1),np.linalg.norm(uv[selected]-arcs[side][-1],axis=1))
+            selected=selected[endpoint_distance>min(band_mm*.5,.1*np.linalg.norm(arcs[side][-1]-arcs[side][0]))]
+        regions.append({'region_id':f"{window['window_id']}_side_{side+1}",'window_id':window['window_id'],
+            'side_index':side,'triangle_indices':selected.tolist(),'triangle_count':len(selected),
+            'status':'candidate' if len(selected)>=2 else 'needs_review'})
+    return regions

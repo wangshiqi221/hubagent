@@ -148,7 +148,7 @@ class AgentPanel(QtWidgets.QDockWidget, _PanelUIMixin, _PanelStreamMixin, _Panel
     # 轮辋逆向扩展：界面可显式指定业务工作流，默认保持通用 CAD 建模。
     def __init__(self, parent=None, *, workflow="cad"):
         super().__init__("CadAgent", parent)
-        if workflow not in ("cad", "rim_sections", "rim_reconstruction"):
+        if workflow not in ("cad", "rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             raise ValueError(f"Unknown workflow: {workflow}")
         self._workflow = workflow
         self._session = ChatSession()
@@ -179,7 +179,7 @@ class AgentPanel(QtWidgets.QDockWidget, _PanelUIMixin, _PanelStreamMixin, _Panel
 
     # 轮辋逆向扩展：允许在空闲时切换下一轮任务类型，不干扰正在执行的任务。
     def set_workflow(self, workflow):
-        if workflow not in ("cad", "rim_sections", "rim_reconstruction"):
+        if workflow not in ("cad", "rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             raise ValueError(f"Unknown workflow: {workflow}")
         if self._turn_active or self._rim_threads:
             raise RuntimeError("请等待当前任务结束后再切换模式")
@@ -212,7 +212,7 @@ class AgentPanel(QtWidgets.QDockWidget, _PanelUIMixin, _PanelStreamMixin, _Panel
 
     # 轮辋逆向扩展：提示本阶段所需输入，避免将截面提取理解为完整重建。
     def _update_workflow_placeholder(self):
-        if self._workflow in ("rim_sections", "rim_reconstruction"):
+        if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             self.text_input.setPlaceholderText("提供轮毂 STL 路径，描述轮辋重建任务；程序自动解析模型和回转轴…")
         else:
             self.text_input.setPlaceholderText("Describe the part you want to design...")
@@ -617,7 +617,8 @@ class AgentPanel(QtWidgets.QDockWidget, _PanelUIMixin, _PanelStreamMixin, _Panel
                         continue
                 self._status_set("executing_tool", name)
                 # 轮辋逆向扩展：模型选择后的 Python 拟合沿用后台线程和取消生命周期。
-                if name in ("rim_repair_sections", "rim_process_sections", "rim_analyze_candidates", "rim_fit_profile",
+                from rim_reconstruction.window_tools import BACKGROUND as window_background
+                if name in window_background or name in ("rim_repair_sections", "rim_process_sections", "rim_analyze_candidates", "rim_fit_profile",
                             "rim_inspect_stl", "rim_estimate_axis", "rim_process_sections_auto", "rim_transverse_sections"):
                     from ui.rim_tool_worker import RimToolWorker
                     worker = RimToolWorker(tc, self._loop, parent=self)

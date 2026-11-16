@@ -1,4 +1,5 @@
 #include "SectionWorkflow.h"
+#include "WindowWorker.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -326,8 +327,12 @@ int main(int argc,char** argv)
             allowResultWrite=false;
             fail("OUTPUT_PATH_CONFLICT","Result must not overwrite source STL",5);
         }
-        const auto request=parse(object,QFileInfo(requestPath).absoluteDir());
-        envelope=execute(request,run);
+        if(isWindowOperation(object.value("operation").toString()))
+            envelope=executeWindowOperation(object,QFileInfo(requestPath).absoluteDir(),run);
+        else {
+            const auto request=parse(object,QFileInfo(requestPath).absoluteDir());
+            envelope=execute(request,run);
+        }
         writeJson(resultPath,envelope);
         if (run) run->setAutoRemove(false); // 摘要成功提交后，才保留本次截面文件。
         printJson(envelope);

@@ -23,9 +23,10 @@ class RimWorkflowTests(unittest.TestCase):
         action = loop.start("提取截面")
         self.assertEqual(loop.mode, "tool_calling")
         self.assertEqual(loop.workflow, "rim_sections")
-        self.assertEqual([t["function"]["name"] for t in action.tools],
-                         ["rim_process_sections", "rim_analyze_candidates", "rim_fit_profile", "rim_build_revolution",
-                          "rim_inspect_stl", "rim_estimate_axis", "rim_process_sections_auto", "rim_repair_sections", "rim_transverse_sections"])
+        names = [t["function"]["name"] for t in action.tools]
+        self.assertEqual(len(names), len(set(names)))
+        for required in ("rim_process_sections", "rim_transverse_sections", "rim_fit_surface_patch", "rim_cut_spoke_windows"):
+            self.assertIn(required, names)
         prompt = action.messages[0]["content"]
         self.assertIn("不得猜测轴线", prompt)
         self.assertIn("已有文档", prompt)

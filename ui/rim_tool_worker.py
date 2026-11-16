@@ -31,6 +31,10 @@ class RimToolWorker(QtCore.QThread):
     def run(self):
         try:
             name = self.tool_call.get("function", {}).get("name", "")
+            from rim_reconstruction.window_tools import BACKGROUND, dispatch_window_tool
+            if name in BACKGROUND:
+                self.result = dispatch_window_tool(name, self.tool_call.get("function", {}).get("arguments", "{}"), cancel_event=self.cancel_event)
+                return
             if name == "rim_evaluate_revolution":
                 if self.evaluation_snapshot is None:
                     raise ValueError("评估缺少主线程几何快照")

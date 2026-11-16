@@ -903,3 +903,7 @@ register_tool("rim_evaluate_revolution", rim_evaluate_revolution)
 
 from rim_reconstruction.tool_handlers import rim_transverse_sections
 register_tool("rim_transverse_sections", rim_transverse_sections)
+
+from rim_reconstruction.window_tools import BACKGROUND as _window_bg, MAIN as _window_main, handler as _window_handler
+for _window_name in (*_window_bg, *_window_main):
+    register_tool(_window_name, _window_handler(_window_name))

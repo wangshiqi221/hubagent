@@ -9,7 +9,7 @@ import json
 
 
 class ModelServiceTests(unittest.TestCase):
-    def test_ui_has_only_two_modes_and_no_workflow_label(self):
+    def test_ui_has_three_modes_and_no_workflow_label(self):
         import ast
         from pathlib import Path
         tree = ast.parse((Path(__file__).resolve().parents[1] / "ui/panel_ui.py").read_text(encoding="utf-8"))
@@ -17,7 +17,7 @@ class ModelServiceTests(unittest.TestCase):
                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                    and n.func.attr == "addItem" and isinstance(n.func.value, ast.Attribute)
                    and n.func.value.attr == "workflow_combo"]
-        self.assertEqual(choices, ["cad", "rim_reconstruction"])
+        self.assertEqual(choices, ["cad", "rim_reconstruction", "spoke_reconstruction"])
         labels = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
         self.assertNotIn("工作流：", labels)
         self.assertIn("模式：", labels)

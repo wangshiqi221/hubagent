@@ -322,3 +322,9 @@ RIM_RECONSTRUCTION_TOOL_NAMES = (
     "rim_inspect_stl", "rim_estimate_axis", "rim_process_sections_auto",
     "rim_repair_sections", "rim_analyze_candidates", "rim_fit_profile", "rim_build_revolution", "rim_transverse_sections",
 )
+
+from rim_reconstruction.window_tools import schemas as _window_schemas
+WINDOW_TOOL_DEFINITIONS = _window_schemas()
+RIM_TOOL_DEFINITIONS.extend(WINDOW_TOOL_DEFINITIONS)
+TOOL_DEFINITIONS.extend(WINDOW_TOOL_DEFINITIONS)
+RIM_RECONSTRUCTION_TOOL_NAMES += tuple(t["function"]["name"] for t in WINDOW_TOOL_DEFINITIONS)

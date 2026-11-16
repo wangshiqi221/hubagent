@@ -91,11 +91,11 @@ class AgentLoop:
 
     # 轮辋逆向扩展：workflow 表示任务类型，与模型调用协议 mode 独立。
     def __init__(self, controller, context: str, last_mode: str = "auto", *, workflow: str = "cad"):
-        if workflow not in ("cad", "rim_sections", "rim_reconstruction"):
+        if workflow not in ("cad", "rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             raise ValueError(f"Unknown workflow: {workflow}")
         self._workflow = workflow
         # 轮辋逆向扩展：兼容原截面模式，新增完整重建模式。
-        self._rim_pipeline = RimPipeline() if workflow == "rim_reconstruction" else None
+        self._rim_pipeline = RimPipeline(require_spokes=workflow == "spoke_reconstruction") if workflow in ("rim_reconstruction", "spoke_reconstruction") else None
         # 轮辋逆向扩展：只对无工具调用的提前结束做一次推进提醒，避免无限循环。
         self._rim_continuation_prompts = 0
         self._rim_build_completed = None
@@ -107,7 +107,7 @@ class AgentLoop:
         self._context = context
         self._mode: str = last_mode or "auto"
         # 轮辋逆向扩展：截面流程暂只支持原生 Tool Calling，不沿用历史 ReAct 协议。
-        if workflow in ("rim_sections", "rim_reconstruction"):
+        if workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             self._mode = "tool_calling"
         self._iteration: int = 0
         self._stopped: bool = False
@@ -177,9 +177,9 @@ class AgentLoop:
             self._rim_pipeline = None
         ctx = self._build_context()
         # 轮辋逆向扩展：按任务选择提示词，避免截面阶段被引导生成 CAD 代码。
-        prompt = RIM_SECTIONS_SYSTEM_PROMPT if self._workflow in ("rim_sections", "rim_reconstruction") else AGENT_SYSTEM_PROMPT
+        prompt = RIM_SECTIONS_SYSTEM_PROMPT if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction") else AGENT_SYSTEM_PROMPT
         # 轮辋逆向扩展：完整重建模式必须一直推进到原生回转实体。
-        if self._workflow == "rim_reconstruction":
+        if self._workflow in ("rim_reconstruction", "spoke_reconstruction"):
             prompt = RIM_RECONSTRUCTION_SYSTEM_PROMPT
         if self._evaluation_requested:
             prompt = EVALUATION_PROMPT + "\n当前文档上下文：\n{context}"
@@ -203,7 +203,7 @@ class AgentLoop:
         parts: list[str] = []
 
         # 轮辋逆向扩展：不注入通用 CQ 建模检查清单、参数和布尔修复建议。
-        if self._workflow in ("rim_sections", "rim_reconstruction"):
+        if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             return self._context
 
         #获取设计参数
@@ -275,7 +275,7 @@ class AgentLoop:
 
         # 轮辋逆向扩展：按工作流提供工具，通用建模保持原有工具范围。
         rim_names = {t["function"]["name"] for t in RIM_TOOL_DEFINITIONS}
-        workflow_tools = (RIM_TOOL_DEFINITIONS if self._workflow in ("rim_sections", "rim_reconstruction") else
+        workflow_tools = (RIM_TOOL_DEFINITIONS if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction") else
                           [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in rim_names])
         # 轮辋逆向扩展修复：完整工具集始终声明，前置条件由执行门禁校验。
         if self._rim_pipeline is not None:
@@ -369,7 +369,7 @@ class AgentLoop:
                               summary=content, from_stream=has_streaming_text, iterations=self._iteration)
 
         # 轮辋逆向扩展：统一处理所有截面结束分支，禁止首轮纯文本绕过阶段校验。
-        if self._workflow in ("rim_sections", "rim_reconstruction"):
+        if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             calls = assistant_msg.get("tool_calls") or []
             if calls:
                 # 轮辋逆向扩展：完整流程一次只执行一个步骤，下一步须等待真实返回。
@@ -491,7 +491,7 @@ class AgentLoop:
                     self._rim_build_completed = False
 
             # 轮辋逆向扩展：不以模型文字或此前的截面成功掩盖拟合失败。
-            if self._workflow in ("rim_sections", "rim_reconstruction"):
+            if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
                 if ex.tool_name in ("rim_repair_sections", "rim_process_sections", "rim_analyze_candidates"):
                     self._rim_fit_completed = None
                 elif ex.tool_name == "rim_fit_profile":
@@ -507,7 +507,7 @@ class AgentLoop:
                         pass
 
             # 轮辋逆向扩展：只信任本轮实际工具的有效摘要；失败会撤销此前成功状态。
-            if self._workflow in ("rim_sections", "rim_reconstruction") and ex.tool_name == "rim_analyze_candidates":
+            if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction") and ex.tool_name == "rim_analyze_candidates":
                 self._rim_analysis_completed = False
                 try:
                     analysis = json.loads(ex.result)
@@ -520,7 +520,7 @@ class AgentLoop:
                     )
                 except (ValueError, TypeError):
                     pass
-            if self._workflow in ("rim_sections", "rim_reconstruction") and ex.tool_name == "rim_process_sections":
+            if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction") and ex.tool_name == "rim_process_sections":
                 self._rim_analysis_completed = None
                 self._rim_sections_succeeded = False
                 try:
@@ -641,7 +641,7 @@ class AgentLoop:
         if self._workflow == "rim_sections" and self._rim_build_completed is not None:
             return (self._rim_build_completed, "本轮回转实体创建未通过。")
         # 轮辋逆向扩展：截面阶段不要求活动文档、execute_code 或有效实体。
-        if self._workflow in ("rim_sections", "rim_reconstruction"):
+        if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             # 轮辋逆向扩展：拟合结果优先于截面与分析的完成状态。
             if self._rim_fit_completed is not None:
                 return (self._rim_fit_completed, "本轮拟合未通过，请检查拟合工具错误。")
@@ -754,7 +754,7 @@ class AgentLoop:
         Falls back to generic guidance if error_hint() returns nothing useful.
         """
         # 轮辋逆向扩展：几何服务错误不能套用布尔运算和 execute_code 修复建议。
-        if self._workflow in ("rim_sections", "rim_reconstruction"):
+        if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             return "检查截面错误码、输入路径和明确提供的坐标系；缺失信息时询问用户，不猜测几何参数。"
         try:
             from agent.code_fixes import error_hint

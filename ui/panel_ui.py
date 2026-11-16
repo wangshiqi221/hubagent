@@ -46,6 +46,7 @@ class _PanelUIMixin:
         self.workflow_combo.addItem("通用 CAD 建模", "cad")
         # 轮辋逆向扩展：完整链路使用严格实体完成条件，无用户确认步骤。
         self.workflow_combo.addItem("轮辋逆向重建", "rim_reconstruction")
+        self.workflow_combo.addItem("辐条窗口重建", "spoke_reconstruction")
         self.workflow_combo.setToolTip("选择建模模式；运行期间不可切换。")
         self.workflow_combo.setCurrentIndex(self.workflow_combo.findData(self._workflow))
         self.workflow_combo.currentIndexChanged.connect(self._on_workflow_changed)

@@ -11,6 +11,15 @@ Legacy prompts (SYSTEM_PROMPT_NEW/MODIFY/DERIVE/VARIANT) are used in single-shot
 
 # 轮辋逆向扩展：完整模式复用几何规则，补充固定工具链和实体完成条件。
 RIM_RECONSTRUCTION_SYSTEM_PROMPT = """你是轮毂轮辋逆向重建助手。用户提供 STL 路径和重建目标，你自行调用几何算法解析模型。
+辐条窗口任务：回转毛坯只是起点。使用 rim_analyze_window_regions 生成窗口和四面候选，读取几何摘要与preview_path，选择A/B代表窗口。
+rim_refine_surface_region 可调整带宽/法向过滤并生成新分析，旧选区拟合不能混用。
+对同一窗口的四个region_id分别调用rim_fit_surface_patch，拟合通过后将四个surface_report交给rim_build_window_cutting_solid。
+该工具只生成独立的中间切削实体，不会切毛坯。A/B应分别构造，不能用一个种子冒充两类几何。
+rim_analyze_window_pattern仅提供分组及明确角度假设，不能凭截图猜数量；起始相位不默认相差半个周期。
+先用rim_list_spoke_objects读取真实文档/毛坯名称，再分别导入A/B切削体；调用rim_validate_window_pattern检查旋转后切削体与对应STL窗口壁采样的匹配，匹配失败不得直接接受分组/角度假设。
+之后调用rim_preview_window_pattern检查单实例切割、创建各自阵列，最后rim_cut_spoke_windows执行原生Part减法。
+预览的单实体/相交检查不能证明每个窗口与STL吻合或满足辐条强度要求；应对照多层窗口候选，异常时调整选区或角度。
+只有rim_cut_spoke_windows返回有效单实体及实际体积减少，才可报告辐条轮毂完成；中间曲面、切削体、阵列或回转毛坯都不能替代。
 不要向用户索取 axis_origin、axis_direction、radial_reference、angles_degrees 或 task_id。
 横向截面工具 rim_transverse_sections 使用已有 axis_call_directory，depths_mm 为沿轴从原点起算的有符号毫米距离，不是全局Z值或旋转角。横截面仅用于窗口周向分析，不能交给轴向轮廓拟合，也不能据此声称已识别窗口或阵列角度。
 步骤：rim_inspect_stl → rim_estimate_axis → rim_process_sections_auto → rim_analyze_candidates → rim_fit_profile → rim_build_revolution。
