@@ -1,0 +1,227 @@
+[
+  {
+    "window_id": "window_001",
+    "angle_degrees": 20.5979130866762,
+    "area_mm2": 6065.883366988071,
+    "radial_span_mm": 116.17506130182042,
+    "tangential_span_mm": 77.62038346787557,
+    "radius_mm": 132.47439805166186,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_002",
+    "angle_degrees": 21.384632769714162,
+    "area_mm2": 818.6556842048408,
+    "radial_span_mm": 32.28305764446926,
+    "tangential_span_mm": 32.345067389269445,
+    "radius_mm": 50.149016552067174,
+    "supporting_depths_mm": [
+      -75.0,
+      -45.0
+    ]
+  },
+  {
+    "window_id": "window_003",
+    "angle_degrees": 56.02998692664158,
+    "area_mm2": 5184.818381850055,
+    "radial_span_mm": 127.92625491650465,
+    "tangential_span_mm": 75.12366009307075,
+    "radius_mm": 136.16430584458237,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_004",
+    "angle_degrees": 73.45523794214289,
+    "area_mm2": 548.9175843711259,
+    "radial_span_mm": 35.24896798983322,
+    "tangential_span_mm": 19.297734839539324,
+    "radius_mm": 140.65733771724013,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_005",
+    "angle_degrees": 92.29348715568449,
+    "area_mm2": 6160.516081699057,
+    "radial_span_mm": 116.90137489518169,
+    "tangential_span_mm": 78.3058644914731,
+    "radius_mm": 134.99716875093472,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_006",
+    "angle_degrees": 92.54906542212706,
+    "area_mm2": 828.73762393923,
+    "radial_span_mm": 32.36739677762783,
+    "tangential_span_mm": 32.60712306753835,
+    "radius_mm": 50.97004438857846,
+    "supporting_depths_mm": [
+      -75.0,
+      -45.0
+    ]
+  },
+  {
+    "window_id": "window_007",
+    "angle_degrees": 111.03766728955245,
+    "area_mm2": 519.2722828632914,
+    "radial_span_mm": 34.38962282826279,
+    "tangential_span_mm": 18.36018008004058,
+    "radius_mm": 141.34785255009004,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_008",
+    "angle_degrees": 128.96967740847992,
+    "area_mm2": 5234.2919870673795,
+    "radial_span_mm": 128.1838376983901,
+    "tangential_span_mm": 75.42314586450655,
+    "radius_mm": 137.20998402876015,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_009",
+    "angle_degrees": 145.43835298719978,
+    "area_mm2": 560.4640826305717,
+    "radial_span_mm": 35.29458986660575,
+    "tangential_span_mm": 19.251249060623465,
+    "radius_mm": 141.4049930938411,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_010",
+    "angle_degrees": 162.88845543509575,
+    "area_mm2": 826.6826664538195,
+    "radial_span_mm": 32.529418496507006,
+    "tangential_span_mm": 32.37273566358661,
+    "radius_mm": 50.09609193250468,
+    "supporting_depths_mm": [
+      -75.0,
+      -45.0
+    ]
+  },
+  {
+    "window_id": "window_011",
+    "angle_degrees": 164.35111851158393,
+    "area_mm2": 6124.9725043465305,
+    "radial_span_mm": 116.77605409503832,
+    "tangential_span_mm": 78.02959930519762,
+    "radius_mm": 132.42069146684736,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_012",
+    "angle_degrees": 182.8122301102329,
+    "area_mm2": 596.2987040248167,
+    "radial_span_mm": 38.598522493329,
+    "tangential_span_mm": 19.21547595683238,
+    "radius_mm": 138.9756752047358,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_013",
+    "angle_degrees": 199.00836317331616,
+    "area_mm2": 5099.9436736952575,
+    "radial_span_mm": 127.12387542621431,
+    "tangential_span_mm": 74.29967394759362,
+    "radius_mm": 133.88012381914868,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_014",
+    "angle_degrees": 217.0224651377461,
+    "area_mm2": 686.9590358724695,
+    "radial_span_mm": 42.19942561372886,
+    "tangential_span_mm": 20.383690716478128,
+    "radius_mm": 138.78734426154688,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_015",
+    "angle_degrees": 234.59887679169697,
+    "area_mm2": 827.1867095128691,
+    "radial_span_mm": 32.3880854474632,
+    "tangential_span_mm": 32.49387656759743,
+    "radius_mm": 49.1458600419092,
+    "supporting_depths_mm": [
+      -75.0,
+      -45.0
+    ]
+  },
+  {
+    "window_id": "window_016",
+    "angle_degrees": 235.99372712996256,
+    "area_mm2": 5967.249825189664,
+    "radial_span_mm": 115.0959524720572,
+    "tangential_span_mm": 76.73526480911704,
+    "radius_mm": 130.60816373787742,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_017",
+    "angle_degrees": 272.158941094203,
+    "area_mm2": 4924.948637941096,
+    "radial_span_mm": 124.89685270207755,
+    "tangential_span_mm": 72.94850144662952,
+    "radius_mm": 132.2779562288407,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_018",
+    "angle_degrees": 307.26365148640684,
+    "area_mm2": 5930.250643742422,
+    "radial_span_mm": 114.59781662982272,
+    "tangential_span_mm": 76.50956822177065,
+    "radius_mm": 133.0040877019062,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  },
+  {
+    "window_id": "window_019",
+    "angle_degrees": 308.2559777153589,
+    "area_mm2": 818.9445747043452,
+    "radial_span_mm": 32.27266081347241,
+    "tangential_span_mm": 32.33246071313019,
+    "radius_mm": 48.96669942364126,
+    "supporting_depths_mm": [
+      -75.0,
+      -45.0
+    ]
+  },
+  {
+    "window_id": "window_020",
+    "angle_degrees": 344.4169081593594,
+    "area_mm2": 5019.454911690591,
+    "radial_span_mm": 125.87167625370643,
+    "tangential_span_mm": 73.75818939591916,
+    "radius_mm": 136.7329884864776,
+    "supporting_depths_mm": [
+      -75.0
+    ]
+  }
+]

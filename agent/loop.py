@@ -264,7 +264,8 @@ class AgentLoop:
             return LoopAction(
                 kind=LoopActionKind.FINISH,
                 success=False,
-                summary="Max iterations reached.",
+                summary=(self._rim_pipeline.limit_summary(_config.MAX_ITERATIONS)
+                         if self._rim_pipeline else "Max iterations reached."),
                 iterations=self._iteration,
             )
 

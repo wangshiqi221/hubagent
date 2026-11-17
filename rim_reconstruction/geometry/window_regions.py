@@ -15,7 +15,27 @@ def _inside(point, polygon):
     return bool(np.count_nonzero(hit & (x < (q[:,0]-p[:,0])*(y-p[:,1])/(q[:,1]-p[:,1]+1e-300)+p[:,0]))%2)
 
 
-def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15):
+def partition_window_candidates(windows):
+    """Separate a clearly smaller feature family before A/B clustering.
+
+    A relative gap is evidence, not a semantic certification. If no clear gap
+    exists, preserve all candidates for review instead of inventing a cutoff.
+    """
+    ordered=sorted(windows,key=lambda w:w['radial_span_mm'])
+    gaps=[(ordered[i+1]['radial_span_mm']/max(ordered[i]['radial_span_mm'],1e-9),i+1)
+          for i in range(len(ordered)-1) if len(ordered)-i-1>=3]
+    ratio,split=max(gaps,default=(0,0))
+    if ratio<2:return list(windows),[]
+    small=ordered[:split];large=ordered[split:]
+    # Require an independent area gap as well; do not discard narrow but long
+    # spoke openings merely because one descriptor differs.
+    if min(w['area_mm2'] for w in large)<2*max(w['area_mm2'] for w in small):
+        return list(windows),[]
+    small_ids={id(w) for w in small}
+    return [w for w in windows if id(w) not in small_ids],small
+
+
+def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, excluded_candidates=None):
     candidates=[]
     for section in sections:
         loops=[c for c in section['contours'] if c['closed'] and c['area_mm2'] and c['area_mm2']>outer_radius**2*5e-4]
@@ -45,8 +65,11 @@ def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15):
     # used as independent positional evidence, never silently merged geometry.
     depths=sorted({c['depth_mm'] for c in candidates})
     if not depths:return []
-    best=max(depths,key=lambda z:(sum(c['depth_mm']==z for c in candidates),-abs(z)))
-    chosen=sorted([c for c in candidates if c['depth_mm']==best],key=lambda c:c['angle_degrees'])
+    layers={z:partition_window_candidates([c for c in candidates if c['depth_mm']==z]) for z in depths}
+    best=max(depths,key=lambda z:(len(layers[z][0]),-abs(z)))
+    chosen=sorted(layers[best][0],key=lambda c:c['angle_degrees'])
+    if excluded_candidates is not None:
+        excluded_candidates.extend({**c,'exclusion_reason':'separate_small_span_and_area_family'} for c in layers[best][1])
     for i,c in enumerate(chosen):
         c['window_id']=f'window_{i+1:03d}'
         c['supporting_depths_mm']=sorted({other['depth_mm'] for other in candidates
@@ -57,6 +80,7 @@ def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15):
 
 def classify_pattern(windows, type_count=2):
     """Deterministic descriptor clustering and explicit angular-instance lists."""
+    windows,excluded=partition_window_candidates(windows)
     if len(windows)<max(2,type_count):return {'status':'needs_review','reason':'Insufficient windows','groups':[]}
     values=np.asarray([[w['area_mm2'],w['radial_span_mm'],w['tangential_span_mm'],w['radius_mm']] for w in windows])
     scale=np.maximum(np.mean(np.abs(values),axis=0),1e-9);features=values/scale
@@ -84,7 +108,10 @@ def classify_pattern(windows, type_count=2):
             'relative_angles_degrees':[(a-representative['angle_degrees'])%360 for a in angles],
             'period_degrees':float(360/len(angles)),
             'equal_spacing_max_error_degrees':float(np.max(np.abs(gaps-360/len(angles))))})
-    return {'status':'hypotheses','groups':groups,'requires_3d_validation':True,
+    regular=all(g['equal_spacing_max_error_degrees']<=.15*g['period_degrees'] for g in groups)
+    return {'status':'hypotheses' if regular else 'needs_review','groups':groups,'requires_3d_validation':True,
+        'excluded_window_ids':[w['window_id'] for w in excluded],
+        'reason':None if regular else 'Groups do not form consistent angular patterns; do not build arrays from these groups',
         'warning':'Types and angular phases are geometric hypotheses; verify imported cutters before cutting.'}
 
 

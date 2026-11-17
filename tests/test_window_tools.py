@@ -13,6 +13,28 @@ EXE=ROOT/'stlload_hub/build_surface/closed_cutter/geometry_worker.exe'
 
 
 class WindowGeometryTests(unittest.TestCase):
+    def test_recorded_pockets_are_not_second_spoke_type(self):
+        from rim_reconstruction.geometry.window_regions import partition_window_candidates
+        windows=json.loads((ROOT/'tests/fixtures/recorded_window_descriptors.json').read_text())
+        kept,excluded=partition_window_candidates(windows)
+        self.assertEqual(len(kept),10)
+        self.assertEqual(len(excluded),10)
+        pattern=classify_pattern(windows)
+        self.assertEqual(pattern['status'],'hypotheses')
+        self.assertEqual(sorted(len(g['window_ids']) for g in pattern['groups']),[5,5])
+        self.assertTrue(all(g['period_degrees']==72 for g in pattern['groups']))
+        self.assertNotIn('window_015',{i for g in pattern['groups'] for i in g['window_ids']})
+
+    def test_irregular_group_requires_review(self):
+        windows=[{'window_id':str(i),'angle_degrees':a,'area_mm2':10.,'radial_span_mm':5.,
+                  'tangential_span_mm':2.,'radius_mm':10.,'supporting_depths_mm':[0]} for i,a in enumerate([0,20,40,180])]
+        self.assertEqual(classify_pattern(windows,1)['status'],'needs_review')
+
+    def test_span_difference_alone_does_not_discard_a_window_type(self):
+        from rim_reconstruction.geometry.window_regions import partition_window_candidates
+        windows=[{'radial_span_mm':span,'area_mm2':100} for span in [10,10,10,30,30,30]]
+        kept,excluded=partition_window_candidates(windows)
+        self.assertEqual(len(kept),6);self.assertEqual(excluded,[])
     def test_disconnected_and_opposite_walls_not_fitted_together(self):
         tri=np.array([[[0,0,0],[2,0,0],[2,2,0]],[[0,0,0],[2,2,0],[0,2,0]],
             [[20,20,0],[21,20,0],[20,21,0]],[[0,0,1],[0,2,1],[2,2,1]]],float)

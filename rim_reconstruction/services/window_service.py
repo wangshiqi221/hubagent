@@ -75,14 +75,15 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     sections=section_triangles(tri,axis['origin'],axis['direction'],parameters['depths_mm'],cancel_event=cancel_event)
     radial=(tri.reshape(-1,3)-np.asarray(axis['origin']));d=np.asarray(axis['direction']);d=d/np.linalg.norm(d)
     outer=float(np.linalg.norm(radial-(radial@d)[:,None]*d,axis=1).max())
-    windows=window_candidates(sections['sections'],outer);regions=[]
+    excluded=[]
+    windows=window_candidates(sections['sections'],outer,excluded_candidates=excluded);regions=[]
     for window in windows:
         check_cancelled(cancel_event);regions.extend(select_side_regions(tri,window,axis,band,normal_axis_limit=limit,cancel_event=cancel_event))
     root=adapter.call_root/'window_jobs'/('job_'+uuid.uuid4().hex);root.mkdir(parents=True)
     data={'algorithm':'window_regions_v2','source_stl':str(source.resolve()),'source_sha256':_hash(source),
         'task_id':request['task_id'],'axis':axis,'parameters':parameters,'axis_call_directory':parameters['axis_call_directory'],
         'axial_range_mm':sections['axial_range_mm'],'outer_radius_mm':outer,'windows':windows,'regions':regions,
-        'pattern':classify_pattern(windows,types)}
+        'pattern':classify_pattern(windows,types),'excluded_feature_candidates':excluded}
     path=root/'windows.json';check_cancelled(cancel_event);_save(path,data);path.with_suffix('.sha256').write_text(_hash(path),encoding='ascii')
     # Simple candidate preview is inspectable without any external image service.
     paths=[]
@@ -93,6 +94,8 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     (root/'windows.svg').write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-outer} {-outer} {2*outer} {2*outer}">'+''.join(paths)+'</svg>',encoding='utf-8')
     return {'status':'success','analysis_status':'candidates_found' if windows else 'needs_review','analysis_path':str(path),
         'preview_path':str(root/'windows.svg'),'window_count':len(windows),
+        'excluded_feature_count':len(excluded),
+        'excluded_feature_summary':[{k:v for k,v in w.items() if k not in ('boundary_uv','side_arcs_uv','frame')} for w in excluded],
         'windows':[{k:v for k,v in w.items() if k not in ('boundary_uv','side_arcs_uv','frame')} for w in windows],
         'regions':[{k:v for k,v in r.items() if k!='triangle_indices'} for r in regions],
         'pattern':data['pattern'],'warnings':['Four-wall regions and A/B groups are hypotheses. Validate fits, cutter placement, and each boolean. No final wheel has been built.']}
@@ -121,8 +124,12 @@ def analyze_window_pattern(parameters,*,adapter=None,cancel_event=None):
 def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     _parameters(parameters,('analysis_path','region_id'),('tolerance_mm','max_iterations'))
     adapter=_adapter(adapter);data=_manifest(parameters['analysis_path'],adapter)
+    from ..geometry.window_regions import partition_window_candidates
+    _,excluded=partition_window_candidates(data['windows'])
     regions=[r for r in data['regions'] if r['region_id']==parameters['region_id']]
     if len(regions)!=1 or regions[0]['status']!='candidate':raise ValueError('Region is missing or needs refinement')
+    if regions[0]['window_id'] in {w['window_id'] for w in excluded}:
+        raise ValueError('Region belongs to the separate small-feature family, not a spoke-window candidate. Rerun window analysis before fitting.')
     from ..geometry.transverse_sections import load_stl
     region=regions[0];tri=load_stl(data['source_stl'],cancel_event)[region['triangle_indices']]
     points=np.concatenate([tri.reshape(-1,3),tri.mean(axis=1),((tri+np.roll(tri,-1,axis=1))/2).reshape(-1,3)])
@@ -156,6 +163,10 @@ def build_window_cutter(parameters,*,adapter=None,cancel_event=None):
     reports=[_surface_report(p,adapter) for p in paths];provenances=[p for _,p in reports]
     if len({p['analysis_path'] for p in provenances})!=1 or len({p['window_id'] for p in provenances})!=1 or len({p['region_id'] for p in provenances})!=4:raise ValueError('Four supports must belong to one window and analysis')
     data=_manifest(provenances[0]['analysis_path'],adapter)
+    from ..geometry.window_regions import partition_window_candidates
+    _,excluded=partition_window_candidates(data['windows'])
+    if provenances[0]['window_id'] in {w['window_id'] for w in excluded}:
+        raise ValueError('Small-feature supports cannot be used for a spoke-window cutter. Rerun window analysis.')
     margin=_positive(parameters.get('axial_margin_mm',max(1.,.02*(data['axial_range_mm'][1]-data['axial_range_mm'][0]))),'axial_margin_mm')
     worker=WindowWorkerAdapter.from_base(adapter)
     response=worker.run({'schema_version':1,'operation':'build_window_cutter','unit':'mm','task_id':data['task_id'],

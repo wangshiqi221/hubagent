@@ -112,6 +112,33 @@ class PipelineTests(unittest.TestCase):
         action = self.loop.handle_stream_done(response(calls=[call, call], reason="tool_calls"), False)
         self.assertFalse(action.success)
 
+    def test_limit_reports_actual_stage_and_failure(self):
+        self.sections();self.analysis();self.fit();self.solid()
+        self.record('rim_fit_surface_patch',{'status':'error','error':{
+            'code':'SURFACE_FIT_FAILED','message':'maximum deviation 0.38 mm',
+            'details':{'maximum_deviation_mm':.38}}})
+        self.loop._workflow='spoke_reconstruction'
+        self.pipeline.require_spokes=True
+        self.loop._iteration=100
+        action=self.loop.prepare_llm_call()
+        self.assertEqual(action.kind,LoopActionKind.FINISH)
+        self.assertFalse(action.success)
+        self.assertIn('回转毛坯已创建',action.summary)
+        self.assertIn('rim_fit_surface_patch',action.summary)
+        self.assertIn('0.38',action.summary)
+        self.assertEqual(self.pipeline.request_context()['recent_failures'][-1]['code'],'SURFACE_FIT_FAILED')
+
+    def test_successful_fit_reference_keeps_region_identity(self):
+        self.record('rim_fit_surface_patch',{'status':'success','surface_report':'/surface'},
+                    {'analysis_path':'/windows','region_id':'window_001_side_2'})
+        self.assertEqual(self.pipeline.window_artifacts[-1]['region_id'],'window_001_side_2')
+
+    def test_successful_diagnostic_with_failed_match_is_not_geometry_success(self):
+        self.record('rim_validate_window_pattern',{'status':'success','stl_match_passed':False,
+                    'instances':[{'maximum_sample_distance_mm':1.8,'matched':False}]})
+        self.assertTrue(self.pipeline.last_tool_failed)
+        self.assertEqual(self.pipeline.failures[-1]['code'],'GEOMETRY_CHECK_FAILED')
+
     def test_four_independent_surface_fits_are_queued_with_original_ids(self):
         self.sections()
         calls=[{'id':f'fit_{i}','function':{'name':'rim_fit_surface_patch','arguments':json.dumps({'analysis_path':'existing.json','region_id':str(i)})}} for i in range(4)]

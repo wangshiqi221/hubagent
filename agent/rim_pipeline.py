@@ -14,6 +14,7 @@ class RimPipeline:
         self.fit = None
         self.solid = None
         self.last_tool_failed = False
+        self.failures = []
 
     def next_step(self):
         """仅在已有成功输入且无真实工具错误时提示推进，不掩盖失败或无候选。"""
@@ -45,7 +46,18 @@ class RimPipeline:
             references.update(document_name=self.solid.get("document_name"), blank_name=self.solid.get("body_name"))
         return {"executable_tools": sorted(self.allowed_tools()), "next_step": self.next_step(),
                 "window_artifacts": self.window_artifacts[-64:],
+                "recent_failures": self.failures[-8:],
                 "artifacts": references, "last_tool_failed": self.last_tool_failed}
+
+    def limit_summary(self, limit):
+        completed = '回转毛坯已创建' if self.solid else '回转毛坯尚未完成'
+        if self.spoke_solid:
+            completed = '辐条切割已完成'
+        pending = '辐条窗口切削与布尔减法尚未完成' if self.require_spokes and not self.spoke_solid else '请核对当前阶段结果'
+        last = self.failures[-1] if self.failures else None
+        detail = (' 最近失败：' + last['tool'] + '：' + last['message']) if last else ''
+        return (f'已达到 Agent 调用轮数上限（{limit} 轮），不是曲面拟合的迭代上限。'
+                f'{completed}；{pending}。成功产物与错误详情保留在当前会话中。' + detail)
 
     def allowed_tools(self):
         names = {"rim_inspect_stl"}
@@ -109,11 +121,29 @@ class RimPipeline:
         try:
             data = json.loads(execution.result)
             if execution.is_error or not isinstance(data, dict) or data.get("status") != "success":
+                error=data.get('error') if isinstance(data,dict) else None
+                error=error if isinstance(error,dict) else {}
+                self.failures.append({'tool':name,'code':error.get('code','TOOL_ERROR'),
+                    'message':str(error.get('message',execution.result))[:700],
+                    'arguments':execution.tool_args,'details':error.get('details')})
+                self.failures=self.failures[-8:]
                 return
             self.last_tool_failed = False
+            check_key={'rim_validate_window_pattern':'stl_match_passed',
+                       'rim_preview_window_pattern':'pattern_ready'}.get(name)
+            if check_key and data.get(check_key) is False:
+                self.last_tool_failed=True
+                self.failures.append({'tool':name,'code':'GEOMETRY_CHECK_FAILED',
+                    'message':check_key+'=false; inspect instance diagnostics before creating the array',
+                    'arguments':execution.tool_args,'details':data.get('instances')})
+                self.failures=self.failures[-8:]
             if name.startswith("rim_"):
                 refs={k:data[k] for k in ("analysis_path","surface_report","cutter_report","document_name","cutter_name","pattern_name","object_name") if data.get(k)}
-                if refs:self.window_artifacts.append({"tool":name,**refs})
+                if refs:
+                    try:args=json.loads(execution.tool_args)
+                    except (ValueError,TypeError):args={}
+                    refs.update({k:args[k] for k in ('region_id','window_id','analysis_path') if k in args})
+                    self.window_artifacts.append({"tool":name,**refs})
             if name == "rim_cut_spoke_windows" and data.get("operation") == "cut_spoke_windows" and data.get("solid_count") == 1 and data.get("volume_mm3", 0) > 0:
                 self.spoke_solid = data
             if (name == "rim_inspect_stl" and data.get("operation") == "inspect_stl"
