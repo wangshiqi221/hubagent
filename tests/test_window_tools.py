@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 from agent.loop import AgentLoop,ToolExecution
 from rim_reconstruction.geometry.window_regions import classify_pattern,window_candidates,select_side_regions
+from rim_reconstruction.geometry.window_regions import coherent_surface_patch
 from rim_reconstruction.services.window_service import WindowWorkerAdapter,_save,_hash
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -12,6 +13,11 @@ EXE=ROOT/'stlload_hub/build_surface/closed_cutter/geometry_worker.exe'
 
 
 class WindowGeometryTests(unittest.TestCase):
+    def test_disconnected_and_opposite_walls_not_fitted_together(self):
+        tri=np.array([[[0,0,0],[2,0,0],[2,2,0]],[[0,0,0],[2,2,0],[0,2,0]],
+            [[20,20,0],[21,20,0],[20,21,0]],[[0,0,1],[0,2,1],[2,2,1]]],float)
+        ids,quality=coherent_surface_patch(tri,np.arange(4))
+        self.assertEqual(ids.tolist(),[0,1]);self.assertEqual(quality['excluded_triangle_count'],2)
     def test_rectangular_window_detected_and_four_wall_regions_selected(self):
         outer={'closed':True,'area_mm2':400.,'points_uv':[[-10,-10],[10,-10],[10,10],[-10,10]]}
         hole={'closed':True,'area_mm2':4.,'points_uv':[[3,-1],[5,-1],[5,1],[3,1]]}
@@ -47,6 +53,15 @@ class WindowGeometryTests(unittest.TestCase):
 
 @unittest.skipUnless(EXE.is_file(),'Build the surface worker first')
 class SurfaceWorkerTests(unittest.TestCase):
+    def test_utf8_fit_error_contains_diagnostics(self):
+        from rim_reconstruction.adapters.cpp_worker_adapter import WorkerError
+        path=self.root/'invalid_samples.json';_save(path,{'samples':[[0,0,0]]*9,'region_id':'bad','source_sha256':'test'})
+        with self.assertRaises(WorkerError) as caught:
+            self.adapter.run({'schema_version':1,'operation':'fit_window_surface','task_id':'test','unit':'mm',
+                'stl_path':'missing.stl','samples_path':str(path),'tolerance_mm':.08,'max_iterations':16})
+        self.assertEqual(caught.exception.code,'SURFACE_FIT_FAILED')
+        self.assertIn('至少',str(caught.exception))
+        self.assertEqual(caught.exception.worker_result['error']['details']['max_iterations'],16)
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir=ROOT/'runtime');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve()
@@ -112,7 +127,7 @@ class WindowCADTests(SurfaceWorkerTests):
         source=self.root/'source.stl';source.write_text('solid test\nendsolid test',encoding='ascii')
         self.adapter.call_root.mkdir(exist_ok=True)
         analysis=self.adapter.call_root/'windows.json'
-        _save(analysis,{'algorithm':'window_regions_v1','source_stl':str(source),'source_sha256':_hash(source),
+        _save(analysis,{'algorithm':'window_regions_v2','source_stl':str(source),'source_sha256':_hash(source),
             'axis':{'origin':[0,0,0],'direction':[0,0,1]}})
         analysis.with_suffix('.sha256').write_text(_hash(analysis),encoding='ascii')
         doc=App.newDocument('WindowTests');doc_name=doc.Name;self.addCleanup(lambda:App.closeDocument(doc_name) if doc_name in App.listDocuments() else None)

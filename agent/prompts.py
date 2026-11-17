@@ -14,6 +14,8 @@ RIM_RECONSTRUCTION_SYSTEM_PROMPT = """你是轮毂轮辋逆向重建助手。用
 辐条窗口任务：回转毛坯只是起点。使用 rim_analyze_window_regions 生成窗口和四面候选，读取几何摘要与preview_path，选择A/B代表窗口。
 rim_refine_surface_region 可调整带宽/法向过滤并生成新分析，旧选区拟合不能混用。
 对同一窗口的四个region_id分别调用rim_fit_surface_patch，拟合通过后将四个surface_report交给rim_build_window_cutting_solid。
+SURFACE_FIT_FAILED 时读取details中的最大偏差、目标容差、迭代次数和约束数。先核对selection_quality中的连通分量和保留比例；可细化选区或显式增加max_iterations（1～32，默认8），不得擅自放宽tolerance_mm。
+旧window_regions_v1分析需要重新分析或细化为v2。v2选区限制同一连通、法向一致的主体面并报告排除比例；被排除及曲面延伸区域不受拟合误差验证。
 该工具只生成独立的中间切削实体，不会切毛坯。A/B应分别构造，不能用一个种子冒充两类几何。
 rim_analyze_window_pattern仅提供分组及明确角度假设，不能凭截图猜数量；起始相位不默认相差半个周期。
 先用rim_list_spoke_objects读取真实文档/毛坯名称，再分别导入A/B切削体；调用rim_validate_window_pattern检查旋转后切削体与对应STL窗口壁采样的匹配，匹配失败不得直接接受分组/角度假设。

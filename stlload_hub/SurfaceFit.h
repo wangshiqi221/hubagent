@@ -7,11 +7,13 @@ struct SurfaceFitResult {
     Handle(Geom_BSplineSurface) surface;
     double maximumDeviation = 0;
     bool planar = false;
+    int iterations = 0;
+    int constraintCount = 0;
 };
 // Validates all supplied samples against the bounded surface, in millimetres.
 // Failure never returns a usable surface. Samples should include triangle interiors.
 bool fitSurfacePatch(const std::vector<gp_Pnt>& samples, double tolerance,
-                     SurfaceFitResult* result, QString* error);
+                     SurfaceFitResult* result, QString* error, int maxIterations = 8);
 
 // Extend a copy to section-plane scale: physical spans, not UV parameter values.
 // Original fitting data remains unchanged. Exterior extrapolation is not fit data.

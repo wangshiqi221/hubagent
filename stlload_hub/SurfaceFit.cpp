@@ -18,11 +18,12 @@
 #include <limits>
 
 bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
-                     SurfaceFitResult* result, QString* error)
+                     SurfaceFitResult* result, QString* error, int maxIterations)
 {
     if (!result) return false;
     *result = {};
     auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if(maxIterations<1 || maxIterations>32) return fail(QStringLiteral("拟合迭代预算必须在1到32之间。"));
     if (!std::isfinite(tolerance) || tolerance <= 0)
         return fail(QStringLiteral("曲面容差必须为正数。"));
     std::vector<gp_Pnt> points;
@@ -55,7 +56,9 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
                 if(error) error->clear();return true;
             }
         }
-        for (int iteration=0; iteration<8; ++iteration) {
+        for (int iteration=0; iteration<maxIterations; ++iteration) {
+            result->iterations=iteration+1;
+            result->constraintCount=int(constraints.size());
             GeomPlate_BuildPlateSurface plate(3, 10, 3, 1e-5, tolerance*0.1);
             for (auto index : constraints)
                 plate.Add(new GeomPlate_PointConstraint(points[index], 0, tolerance*0.1));
@@ -74,6 +77,7 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
                 maximum=std::max(maximum,distance);
                 if (distance>tolerance && !constraints.count(i)) errors.emplace_back(distance,i);
             }
+            result->maximumDeviation=maximum;
             if (maximum<=tolerance) {
                 result->surface=surface; result->maximumDeviation=maximum;
                 if (error) error->clear();
@@ -83,7 +87,8 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
             std::sort(errors.rbegin(),errors.rend());
             for (size_t i=0;i<std::min<size_t>(32,errors.size());++i) constraints.insert(errors[i].second);
         }
-        return fail(QStringLiteral("达到曲面拟合迭代上限，仍未满足容差。请缩小选区或调整误差。"));
+        return fail(QStringLiteral("达到曲面拟合迭代上限 %1 次，最大采样偏差 %2 mm，目标 %3 mm；约束点 %4。请细化选区或增加迭代预算，不自动放宽容差。")
+            .arg(maxIterations).arg(result->maximumDeviation,0,'g',8).arg(tolerance,0,'g',8).arg(result->constraintCount));
     } catch (const Standard_Failure& failure) {
         return fail(QStringLiteral("曲面拟合异常：%1").arg(QString::fromUtf8(failure.GetMessageString())));
     }

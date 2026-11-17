@@ -45,10 +45,18 @@ QJsonObject executeWindowOperation(const QJsonObject& request,const QDir& base,s
     QJsonObject data{{"unit","mm"},{"operation",operation},{"task_id",task}};QString error;
     if(operation=="fit_window_surface"){
         auto source=read(path(base,request,"samples_path"));auto p=samples(source);auto tolerance=request["tolerance_mm"].toDouble(-1);
-        SurfaceFitResult fit;require(fitSurfacePatch(p,tolerance,&fit,&error),error);
+        const auto budgetValue=request.value("max_iterations");
+        require(budgetValue.isUndefined() || (budgetValue.isDouble() && budgetValue.toDouble()==budgetValue.toInt() && budgetValue.toInt()>=1 && budgetValue.toInt()<=32),"Invalid max_iterations");
+        const int budget=budgetValue.toInt(8);
+        SurfaceFitResult fit;
+        if(!fitSurfacePatch(p,tolerance,&fit,&error,budget))
+            throw WindowWorkerFailure("SURFACE_FIT_FAILED",error,QJsonObject{{"iterations",fit.iterations},
+                {"max_iterations",budget},{"maximum_deviation_mm",fit.maximumDeviation},
+                {"tolerance_mm",tolerance},{"constraint_count",fit.constraintCount},{"sample_count",int(p.size())}});
         BRepBuilderAPI_MakeFace maker(fit.surface,1e-6);require(maker.IsDone()&&BRepCheck_Analyzer(maker.Face()).IsValid(),"Invalid fitted face");
         shapeWrite(maker.Face(),geometry);data["samples"]=source["samples"];data["region_id"]=source["region_id"];
         data["source_sha256"]=source["source_sha256"];data["maximum_deviation_mm"]=fit.maximumDeviation;data["planar"]=fit.planar;data["tolerance_mm"]=tolerance;
+        data["iterations"]=fit.iterations;data["max_iterations"]=budget;data["constraint_count"]=fit.constraintCount;
     }else{
         auto reports=request["surface_reports"].toArray();require(reports.size()==4,"Exactly four surface reports required");
         std::array<TopoDS_Face,4> faces;std::array<std::vector<gp_Pnt>,4> points;

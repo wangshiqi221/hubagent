@@ -51,11 +51,13 @@ class WindowWorkerAdapter(CppWorkerAdapter):
         if request['operation']=='build_window_cutter' and (data.get('solid_count')!=1 or not data.get('closed_solid') or data.get('volume_mm3',0)<=0):raise ValueError('Not a valid single cutter')
 
 
-def _manifest(path,adapter):
+def _manifest(path,adapter,allow_legacy=False):
     path=Path(path).resolve()
     if not path.is_relative_to(adapter.call_root.resolve()) or path.name!='windows.json':raise ValueError('Use an actual window analysis artifact')
     data=_read_json(path,adapter.max_artifact_bytes)
-    if data.get('algorithm')!='window_regions_v1' or _hash(data['source_stl'])!=data['source_sha256']:raise ValueError('Source mesh changed; rerun window analysis')
+    if data.get('algorithm') not in (('window_regions_v1','window_regions_v2') if allow_legacy else ('window_regions_v2',)):
+        raise ValueError('Window selection version is outdated; rerun rim_analyze_window_regions or rim_refine_surface_region')
+    if _hash(data['source_stl'])!=data['source_sha256']:raise ValueError('Source mesh changed; rerun window analysis')
     if _hash(path)!=path.with_suffix('.sha256').read_text(encoding='ascii').strip():raise ValueError('Window analysis was modified')
     return data
 
@@ -77,7 +79,7 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     for window in windows:
         check_cancelled(cancel_event);regions.extend(select_side_regions(tri,window,axis,band,normal_axis_limit=limit,cancel_event=cancel_event))
     root=adapter.call_root/'window_jobs'/('job_'+uuid.uuid4().hex);root.mkdir(parents=True)
-    data={'algorithm':'window_regions_v1','source_stl':str(source.resolve()),'source_sha256':_hash(source),
+    data={'algorithm':'window_regions_v2','source_stl':str(source.resolve()),'source_sha256':_hash(source),
         'task_id':request['task_id'],'axis':axis,'parameters':parameters,'axis_call_directory':parameters['axis_call_directory'],
         'axial_range_mm':sections['axial_range_mm'],'outer_radius_mm':outer,'windows':windows,'regions':regions,
         'pattern':classify_pattern(windows,types)}
@@ -98,7 +100,7 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
 
 def refine_surface_region(parameters,*,adapter=None,cancel_event=None):
     _parameters(parameters,('analysis_path','window_id','band_mm'),('normal_axis_limit',))
-    adapter=_adapter(adapter);old=_manifest(parameters['analysis_path'],adapter)
+    adapter=_adapter(adapter);old=_manifest(parameters['analysis_path'],adapter,allow_legacy=True)
     if parameters['window_id'] not in [w['window_id'] for w in old['windows']]:raise ValueError('Unknown window')
     # Generate a new immutable analysis with fresh geometry selection, never edit
     # the previous artifact or reuse fits made against a different region.
@@ -117,7 +119,7 @@ def analyze_window_pattern(parameters,*,adapter=None,cancel_event=None):
 
 
 def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
-    _parameters(parameters,('analysis_path','region_id'),('tolerance_mm',))
+    _parameters(parameters,('analysis_path','region_id'),('tolerance_mm','max_iterations'))
     adapter=_adapter(adapter);data=_manifest(parameters['analysis_path'],adapter)
     regions=[r for r in data['regions'] if r['region_id']==parameters['region_id']]
     if len(regions)!=1 or regions[0]['status']!='candidate':raise ValueError('Region is missing or needs refinement')
@@ -125,11 +127,13 @@ def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     region=regions[0];tri=load_stl(data['source_stl'],cancel_event)[region['triangle_indices']]
     points=np.concatenate([tri.reshape(-1,3),tri.mean(axis=1),((tri+np.roll(tri,-1,axis=1))/2).reshape(-1,3)])
     tolerance=_positive(parameters.get('tolerance_mm',.1),'tolerance_mm')
+    budget=parameters.get('max_iterations',8)
+    if type(budget)!=int or not 1<=budget<=32:raise ValueError('max_iterations must be 1..32')
     sample_path=Path(parameters['analysis_path']).parent/('samples_'+uuid.uuid4().hex+'.json')
     _save(sample_path,{'samples':points.tolist(),'region_id':region['region_id'],'source_sha256':data['source_sha256']})
     worker=WindowWorkerAdapter.from_base(adapter)
     response=worker.run({'schema_version':1,'operation':'fit_window_surface','task_id':data['task_id'],'unit':'mm',
-        'stl_path':data['source_stl'],'samples_path':str(sample_path),'tolerance_mm':tolerance},cancel_event=cancel_event)
+        'stl_path':data['source_stl'],'samples_path':str(sample_path),'tolerance_mm':tolerance,'max_iterations':budget},cancel_event=cancel_event)
     report=next(a['path'] for a in response.result['artifacts'] if a['type']=='window_report')
     record=Path(report).parent/'provenance.json';_save(record,{'analysis_path':parameters['analysis_path'],
         'region_id':region['region_id'],'window_id':region['window_id'],'geometry_sha256':_hash(Path(report).parent/'geometry.brep'),

@@ -31,7 +31,9 @@ def dispatch_window_tool(name,args_json,*,cancel_event=None):
             result=getattr(window_cad_service,MAIN[name])(p)
         else:raise ValueError('Unknown window tool')
     except WorkerError as exc:
-        result={'status':'cancelled' if isinstance(exc,WorkerCancelledError) else 'error','error':{'code':exc.code,'message':str(exc)}}
+        detail=(getattr(exc,'worker_result',None) or {}).get('error',{}).get('details')
+        result={'status':'cancelled' if isinstance(exc,WorkerCancelledError) else 'error','error':{'code':exc.code,'message':str(exc),'details':detail},
+                'call_directory':str(exc.call_directory) if exc.call_directory else None}
     except (ValueError,TypeError,KeyError) as exc:
         result={'status':'error','error':{'code':'WINDOW_INPUT_INVALID','message':str(exc)}}
     except Exception as exc:
@@ -60,7 +62,7 @@ def schemas():
     add('rim_analyze_window_pattern','Return geometric A/B grouping and explicit angle hypotheses. No guessed count or automatic cut.',
         {'analysis_path':text,'type_count':{'type':'integer','minimum':1,'maximum':8}},['analysis_path'])
     add('rim_fit_surface_patch','Fit one actual region with C++ SurfaceFit. Accepts region IDs only, no generated coordinates. Returns surface_report and fit error.',
-        {'analysis_path':text,'region_id':text,'tolerance_mm':{'type':'number','exclusiveMinimum':0}},['analysis_path','region_id'])
+        {'analysis_path':text,'region_id':text,'tolerance_mm':{'type':'number','exclusiveMinimum':0},'max_iterations':{'type':'integer','minimum':1,'maximum':32,'default':8}},['analysis_path','region_id'])
     add('rim_build_window_cutting_solid','Build an intermediate closed cutter from four distinct fitted supports of the same window. Does not array or subtract.',
         {'surface_reports':{'type':'array','items':text,'minItems':4,'maxItems':4,'uniqueItems':True},'fillet_radius_mm':{'type':'number','minimum':0},'axial_margin_mm':{'type':'number','exclusiveMinimum':0}},['surface_reports'])
     add('rim_list_spoke_objects','List real document/object IDs, solids and reconstruction sources before selecting the blank.',{'document_name':text},[])

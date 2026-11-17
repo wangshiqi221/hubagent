@@ -117,7 +117,44 @@ def select_side_regions(triangles, window, axis, band_mm, *, normal_axis_limit=.
         if len(selected):
             endpoint_distance=np.minimum(np.linalg.norm(uv[selected]-arcs[side][0],axis=1),np.linalg.norm(uv[selected]-arcs[side][-1],axis=1))
             selected=selected[endpoint_distance>min(band_mm*.5,.1*np.linalg.norm(arcs[side][-1]-arcs[side][0]))]
+        initial_count=len(selected)
+        selected,quality=coherent_surface_patch(tri,selected)
         regions.append({'region_id':f"{window['window_id']}_side_{side+1}",'window_id':window['window_id'],
             'side_index':side,'triangle_indices':selected.tolist(),'triangle_count':len(selected),
-            'status':'candidate' if len(selected)>=2 else 'needs_review'})
+            'selection_quality':quality,'initial_triangle_count':initial_count,
+            'status':'candidate' if len(selected)>=2 and quality['retained_fraction']>=.2 else 'needs_review'})
     return regions
+
+
+def coherent_surface_patch(triangles,indices):
+    """One connected, bounded-normal wall patch; never fit separate walls as one.
+    Every exclusion is recorded. Fitting/extension is not validated outside it.
+    """
+    ids=np.asarray(indices,dtype=int)
+    if not len(ids):return ids,{'retained_fraction':0.,'component_count':0,'normal_limit_degrees':35.}
+    tri=np.asarray(triangles)[ids];vectors=np.cross(tri[:,1]-tri[:,0],tri[:,2]-tri[:,0]);areas=np.linalg.norm(vectors,axis=1)
+    normals=vectors/np.maximum(areas[:,None],1e-30)
+    bins=np.rint(normals/.2).astype(int);groups={}
+    for i,key in enumerate(map(tuple,bins)):groups.setdefault(key,[]).append(i)
+    group=max(groups.values(),key=lambda values:float(areas[values].sum()))
+    reference=np.sum(normals[group]*areas[group,None],axis=0);reference/=max(np.linalg.norm(reference),1e-30)
+    eligible=np.flatnonzero((normals@reference>=np.cos(np.radians(35)))&(areas>1e-12))
+    adjacency={int(i):set() for i in eligible};edges={}
+    for i in eligible:
+        for a,b in ((0,1),(1,2),(2,0)):
+            key=tuple(sorted((tuple(tri[i,a]),tuple(tri[i,b]))));edges.setdefault(key,[]).append(int(i))
+    for incident in edges.values():
+        if len(incident)==2:
+            a,b=incident;adjacency[a].add(b);adjacency[b].add(a)
+    components=[];unseen=set(adjacency)
+    while unseen:
+        first=min(unseen);unseen.remove(first);todo=[first];component=[]
+        while todo:
+            current=todo.pop();component.append(current)
+            for neighbor in adjacency[current]:
+                if neighbor in unseen:unseen.remove(neighbor);todo.append(neighbor)
+        components.append(component)
+    best=max(components,key=lambda values:float(areas[values].sum())) if components else []
+    selected=ids[sorted(best)]
+    return selected,{'retained_fraction':len(selected)/len(ids),'component_count':len(components),
+        'normal_limit_degrees':35.,'excluded_triangle_count':len(ids)-len(selected)}

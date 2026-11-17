@@ -349,6 +349,10 @@ int main(int argc,char** argv)
             }
         }
         printJson(envelope); return e.exitCode;
+    } catch (const WindowWorkerFailure& e) {
+        envelope.remove("run_id");
+        envelope.insert("status","error");envelope.insert("metrics",QJsonObject{});envelope.insert("artifacts",QJsonArray{});
+        envelope.insert("error",QJsonObject{{"code",e.code},{"message",e.message},{"details",e.details}});
     } catch (const Standard_Failure& e) {
         envelope.remove("run_id");
         envelope.insert("status","error"); envelope.insert("metrics",QJsonObject{}); envelope.insert("artifacts",QJsonArray{});
@@ -356,7 +360,7 @@ int main(int argc,char** argv)
     } catch (const std::exception& e) {
         envelope.remove("run_id");
         envelope.insert("status","error"); envelope.insert("metrics",QJsonObject{}); envelope.insert("artifacts",QJsonArray{});
-        envelope.insert("error",QJsonObject{{"code","INTERNAL_ERROR"},{"message",QString::fromLocal8Bit(e.what())}});
+        envelope.insert("error",QJsonObject{{"code","INTERNAL_ERROR"},{"message",QString::fromUtf8(e.what())}});
     }
     if (allowResultWrite) {
         try { writeJson(resultPath,envelope); }
