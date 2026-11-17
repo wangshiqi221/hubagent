@@ -76,7 +76,7 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     radial=(tri.reshape(-1,3)-np.asarray(axis['origin']));d=np.asarray(axis['direction']);d=d/np.linalg.norm(d)
     outer=float(np.linalg.norm(radial-(radial@d)[:,None]*d,axis=1).max())
     excluded=[]
-    windows=window_candidates(sections['sections'],outer,excluded_candidates=excluded);regions=[]
+    windows=window_candidates(sections['sections'],outer,excluded_candidates=excluded,spoke_only=True);regions=[]
     for window in windows:
         check_cancelled(cancel_event);regions.extend(select_side_regions(tri,window,axis,band,normal_axis_limit=limit,cancel_event=cancel_event))
     root=adapter.call_root/'window_jobs'/('job_'+uuid.uuid4().hex);root.mkdir(parents=True)
@@ -95,6 +95,7 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     return {'status':'success','analysis_status':'candidates_found' if windows else 'needs_review','analysis_path':str(path),
         'preview_path':str(root/'windows.svg'),'window_count':len(windows),
         'excluded_feature_count':len(excluded),
+        'excluded_feature_count_scope':'per-depth contour observations; the same feature may appear at multiple depths',
         'excluded_feature_summary':[{k:v for k,v in w.items() if k not in ('boundary_uv','side_arcs_uv','frame')} for w in excluded],
         'windows':[{k:v for k,v in w.items() if k not in ('boundary_uv','side_arcs_uv','frame')} for w in windows],
         'regions':[{k:v for k,v in r.items() if k!='triangle_indices'} for r in regions],
@@ -121,6 +122,21 @@ def analyze_window_pattern(parameters,*,adapter=None,cancel_event=None):
     return {'status':'success','analysis_path':parameters['analysis_path'],**{'pattern':classify_pattern(data['windows'],count)}}
 
 
+def prepare_window_loft(parameters,*,adapter=None,cancel_event=None):
+    from .window_loft_service import prepare_window_loft as prepare
+    return prepare(parameters,adapter=adapter,cancel_event=cancel_event)
+
+
+def prepare_window_lofts(parameters,*,adapter=None,cancel_event=None):
+    from .window_loft_service import prepare_window_lofts as prepare
+    return prepare(parameters,adapter=adapter,cancel_event=cancel_event)
+
+
+def refine_axis_symmetry(parameters,*,adapter=None,cancel_event=None):
+    from .model_service import refine_model_axis
+    return refine_model_axis(parameters,adapter=adapter,cancel_event=cancel_event)
+
+
 def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     _parameters(parameters,('analysis_path','region_id'),('tolerance_mm','max_iterations'))
     adapter=_adapter(adapter);data=_manifest(parameters['analysis_path'],adapter)
@@ -128,6 +144,9 @@ def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     _,excluded=partition_window_candidates(data['windows'])
     regions=[r for r in data['regions'] if r['region_id']==parameters['region_id']]
     if len(regions)!=1 or regions[0]['status']!='candidate':raise ValueError('Region is missing or needs refinement')
+    from ..geometry.window_regions import is_spoke_window
+    window=next(w for w in data['windows'] if w['window_id']==regions[0]['window_id'])
+    if not is_spoke_window(window,data['outer_radius_mm']):raise ValueError('Selected hole does not span the hub-to-rim spoke region; rerun window analysis')
     if regions[0]['window_id'] in {w['window_id'] for w in excluded}:
         raise ValueError('Region belongs to the separate small-feature family, not a spoke-window candidate. Rerun window analysis before fitting.')
     from ..geometry.transverse_sections import load_stl
@@ -163,6 +182,9 @@ def build_window_cutter(parameters,*,adapter=None,cancel_event=None):
     reports=[_surface_report(p,adapter) for p in paths];provenances=[p for _,p in reports]
     if len({p['analysis_path'] for p in provenances})!=1 or len({p['window_id'] for p in provenances})!=1 or len({p['region_id'] for p in provenances})!=4:raise ValueError('Four supports must belong to one window and analysis')
     data=_manifest(provenances[0]['analysis_path'],adapter)
+    from ..geometry.window_regions import is_spoke_window
+    window=next(w for w in data['windows'] if w['window_id']==provenances[0]['window_id'])
+    if not is_spoke_window(window,data['outer_radius_mm']):raise ValueError('Central-hole supports cannot form a spoke cutter')
     from ..geometry.window_regions import partition_window_candidates
     _,excluded=partition_window_candidates(data['windows'])
     if provenances[0]['window_id'] in {w['window_id'] for w in excluded}:

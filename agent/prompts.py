@@ -11,6 +11,10 @@ Legacy prompts (SYSTEM_PROMPT_NEW/MODIFY/DERIVE/VARIANT) are used in single-shot
 
 # 轮辋逆向扩展：完整模式复用几何规则，补充固定工具链和实体完成条件。
 RIM_RECONSTRUCTION_SYSTEM_PROMPT = """你是轮毂轮辋逆向重建助手。用户提供 STL 路径和重建目标，你自行调用几何算法解析模型。
+已观察到重复窗口且PCA轴下的阵列匹配失败时，调用rim_refine_axis_symmetry，用真实分组实例数做多角度配准；轴改变后必须重新计算轴向截面、拟合并创建毛坯，旧轴产物不得混用。轴配准采样改善不等于工程精度认证。
+四张局部曲面不能正确封闭时，改用rim_prepare_window_loft（多个窗口用rim_prepare_window_lofts）和rim_build_window_loft_cutter：由多层真实闭合窗口边界拟合放样，不能靠无界曲面反复外推。窗口放样只覆盖实测前轮盘带，不强制贯穿后轮辋；导入后调用rim_extend_window_cutter_through_disc，用毛坯真实空腔的空环分隔证明保护外轮辋，只清除内轮盘背面的余料。
+辐条窗口须覆盖轮心至轮辋的径向区域，中心螺孔不能作为A/B辐条模板。工具提供面积质心角度与等分相对角度假设；均需真实匹配验证，不用顶点平均值推断相位。
+若一个A/B模板即使校正轴后仍不能在容差内匹配同族所有窗口，分别拟合各真实窗口，使用rim_create_window_cutter_set组成A/B两组实际刀具，再rim_cut_spoke_windows原生减法。应明确这是逐窗拟合变体，不是相同模板的刚性复制；不能放宽0.5 mm曲面拟合和逐窗匹配标准来强行通过。
 辐条窗口任务：回转毛坯只是起点。使用 rim_analyze_window_regions 生成窗口和四面候选，读取几何摘要与preview_path，选择A/B代表窗口。
 rim_refine_surface_region 可调整带宽/法向过滤并生成新分析，旧选区拟合不能混用。
 对同一窗口的四个region_id分别调用rim_fit_surface_patch，拟合通过后将四个surface_report交给rim_build_window_cutting_solid。

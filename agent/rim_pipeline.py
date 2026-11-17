@@ -67,7 +67,8 @@ class RimPipeline:
             current=self.inspection.get('metrics',{})
             same_observation=(previous.get('source_path') and
                 all(previous.get(k)==current.get(k) for k in ('source_path','file_size_bytes','bounding_box','triangle_count'))
-                and checkpoint['axis'].get('metrics',{}).get('axis_candidate')==self.axis.get('metrics',{}).get('axis_candidate'))
+                and checkpoint['axis'].get('axis_candidate',checkpoint['axis'].get('metrics',{}).get('axis_candidate'))
+                    ==self.axis.get('axis_candidate',self.axis.get('metrics',{}).get('axis_candidate')))
             if same_run or same_observation:
                 for key,value in checkpoint.items():setattr(self,key,value)
         self.spoke_solid=None
@@ -125,6 +126,8 @@ class RimPipeline:
                 raise ValueError("工具参数必须为对象")
             if name == "rim_estimate_axis" and data.get("inspection_call_directory") != self.inspection["call_directory"]:
                 raise ValueError("必须使用本轮模型检查返回的目录")
+            if name == 'rim_refine_axis_symmetry' and data.get('axis_call_directory')!=self.axis['call_directory']:
+                raise ValueError('必须从当前轴线产物进行对称配准')
             if name in ("rim_process_sections_auto", "rim_transverse_sections") and data.get("axis_call_directory") != self.axis["call_directory"]:
                 raise ValueError("必须使用本轮 C++ 轴线估计返回的目录")
             if name in ("rim_analyze_candidates", "rim_repair_sections") and data.get("call_directory") != self.section["call_directory"]:
@@ -140,13 +143,13 @@ class RimPipeline:
     def record(self, execution):
         name = execution.tool_name
         from rim_reconstruction.window_tools import BACKGROUND
-        if name in BACKGROUND or name in ("rim_import_window_cutter", "rim_create_cutter_pattern", "rim_validate_window_pattern"):
+        if name in BACKGROUND or name in ("rim_import_window_cutter", "rim_extend_window_cutter_through_disc", "rim_create_cutter_pattern", "rim_create_window_cutter_set", "rim_validate_window_pattern"):
             self.spoke_solid = None
         self.last_tool_failed = True
         # 上游重试立即撤销下游状态，包括失败和取消，不能复用旧实体报成功。
         if name == "rim_inspect_stl":
             self.inspection = self.axis = self.section = self.analysis = self.fit = self.solid = None
-        elif name == "rim_estimate_axis":
+        elif name in ("rim_estimate_axis","rim_refine_axis_symmetry"):
             self.axis = self.section = self.analysis = self.fit = self.solid = None
         elif name in ("rim_repair_sections", "rim_process_sections", "rim_process_sections_auto"):
             self.section = self.analysis = self.fit = self.solid = None
@@ -156,7 +159,7 @@ class RimPipeline:
             self.fit = self.solid = None
         elif name == "rim_build_revolution":
             self.solid = None
-        if name == "rim_cut_spoke_windows" or name in ("rim_inspect_stl", "rim_estimate_axis", "rim_build_revolution"):
+        if name == "rim_cut_spoke_windows" or name in ("rim_inspect_stl", "rim_estimate_axis", "rim_refine_axis_symmetry", "rim_build_revolution"):
             self.spoke_solid = None
         try:
             data = json.loads(execution.result)
@@ -178,7 +181,11 @@ class RimPipeline:
                     'arguments':execution.tool_args,'details':data.get('instances')})
                 self.failures=self.failures[-8:]
             if name.startswith("rim_"):
-                refs={k:data[k] for k in ("analysis_path","surface_report","cutter_report","document_name","cutter_name","pattern_name","object_name") if data.get(k)}
+                for prepared in data.get('prepared_lofts',[]):
+                    if isinstance(prepared,dict) and prepared.get('loft_path'):
+                        self.window_artifacts.append({'tool':name,'loft_path':prepared['loft_path'],
+                            'window_id':prepared.get('window_id'),'analysis_path':data.get('analysis_path')})
+                refs={k:data[k] for k in ("analysis_path","loft_path","window_id","surface_report","cutter_report","document_name","cutter_name","pattern_name","object_name") if data.get(k)}
                 if refs:
                     try:args=json.loads(execution.tool_args)
                     except (ValueError,TypeError):args={}
@@ -189,7 +196,7 @@ class RimPipeline:
             if (name == "rim_inspect_stl" and data.get("operation") == "inspect_stl"
                     and data.get("call_directory") and data.get("task_id")):
                 self.inspection = data
-            elif (name == "rim_estimate_axis" and self.inspection
+            elif (name in ("rim_estimate_axis","rim_refine_axis_symmetry") and self.inspection
                   and data.get("operation") == "estimate_axis"
                   and data.get("task_id") == self.inspection["task_id"] and data.get("call_directory")):
                 self.axis = data

@@ -22,6 +22,12 @@ def _load_call(directory, operation, adapter):
     if request.get("operation") != operation:
         raise ValueError("输入不是所需的模型解析产物")
     adapter._validate_result(result, request, call)
+    if operation=='estimate_axis' and request.get('source_axis_call_directory'):
+        from .window_service import _hash
+        report=_read_json(call/'axis_refinement.json',adapter.max_artifact_bytes)
+        if report.get('source_sha256')!=_hash(request['stl_path']):raise ValueError('Source mesh changed after axis refinement')
+        if report.get('axis_candidate',result['metrics']['axis_candidate'])!=result['metrics']['axis_candidate']:
+            raise ValueError('Refined axis disagrees with its registration report')
     return request, result
 
 
@@ -101,3 +107,25 @@ def process_model_sections(parameters, *, adapter=None, cancel_event=None):
 def process_transverse_sections(parameters, *, adapter=None, cancel_event=None):
     from .transverse_service import process_transverse_sections as process
     return process(parameters, adapter=adapter, cancel_event=cancel_event)
+
+
+def refine_model_axis(parameters,*,adapter=None,cancel_event=None):
+    if set(parameters)!={'axis_call_directory','instance_count'}:raise ValueError('Use source axis and observed instance count')
+    count=parameters['instance_count']
+    if type(count)!=int or not 2<=count<=12:raise ValueError('instance_count must be 2..12, from observed pattern evidence')
+    adapter=_adapter(adapter);request,result=_load_call(parameters['axis_call_directory'],'estimate_axis',adapter)
+    from ..geometry.transverse_sections import load_stl
+    from ..geometry.symmetry_axis import refine_symmetry_axis
+    from .window_service import _save,_hash
+    import copy
+    axis,report=refine_symmetry_axis(load_stl(request['stl_path'],cancel_event),result['metrics']['axis_candidate'],count,cancel_event=cancel_event)
+    root=adapter.call_root/('axis_refined_'+uuid.uuid4().hex);root.mkdir()
+    req=copy.deepcopy(request);req['source_axis_call_directory']=parameters['axis_call_directory'];req['refinement_instance_count']=count
+    output=copy.deepcopy(result);output['metrics']['axis_candidate']=axis
+    output['run_id']=root.name;output['warnings']=['SYMMETRY_AXIS_REFINED: engineering accuracy remains unconfirmed']
+    report.update(source_axis_call_directory=parameters['axis_call_directory'],source_sha256=_hash(request['stl_path']),axis_candidate=axis)
+    _save(root/'request.json',req);_save(root/'result.json',output);_save(root/'axis_refinement.json',report)
+    adapter._validate_result(output,req,root)
+    return {'status':'success','operation':'estimate_axis','task_id':req['task_id'],'call_directory':str(root),
+            'axis_candidate':axis,'axis_validated':False,'refinement_report':str(root/'axis_refinement.json'),
+            'registration':report,'unit':'mm','warnings':output['warnings']}

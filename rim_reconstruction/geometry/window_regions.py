@@ -35,12 +35,25 @@ def partition_window_candidates(windows):
     return [w for w in windows if id(w) not in small_ids],small
 
 
-def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, excluded_candidates=None):
+def polygon_centroid(points):
+    p=np.asarray(points);q=np.roll(p,-1,axis=0)
+    cross=p[:,0]*q[:,1]-q[:,0]*p[:,1]
+    return np.sum((p+q)*cross[:,None],axis=0)/(3*cross.sum()) if abs(cross.sum())>1e-12 else p.mean(axis=0)
+
+
+def is_spoke_window(window, outer_radius):
+    """A spoke opening must span a hub-to-rim radial band, not just be a hole."""
+    boundary=np.asarray(window['boundary_uv'])
+    return (window['radial_span_mm']>=.25*outer_radius
+            and np.linalg.norm(boundary,axis=1).max()>=.7*outer_radius)
+
+
+def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, excluded_candidates=None, spoke_only=False):
     candidates=[]
     for section in sections:
         loops=[c for c in section['contours'] if c['closed'] and c['area_mm2'] and c['area_mm2']>outer_radius**2*5e-4]
         for loop in loops:
-            p=np.asarray(loop['points_uv']);center=p.mean(axis=0);radius=float(np.linalg.norm(center))
+            p=np.asarray(loop['points_uv']);center=polygon_centroid(p);radius=float(np.linalg.norm(center))
             # Nesting, not just loop area, distinguishes windows from material islands.
             nesting=sum(_inside(p[0],other['points_uv']) for other in loops if other is not loop)
             if nesting%2!=1 or not minimum_radius_ratio*outer_radius<radius<.95*outer_radius:continue
@@ -65,6 +78,13 @@ def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, exclu
     # used as independent positional evidence, never silently merged geometry.
     depths=sorted({c['depth_mm'] for c in candidates})
     if not depths:return []
+    if spoke_only:
+        small=[c for c in candidates if not is_spoke_window(c,outer_radius)]
+        if excluded_candidates is not None:
+            excluded_candidates.extend({**c,'exclusion_reason':'does_not_span_hub_to_rim'} for c in small)
+        candidates=[c for c in candidates if is_spoke_window(c,outer_radius)]
+        depths=sorted({c['depth_mm'] for c in candidates})
+        if not depths:return []
     layers={z:partition_window_candidates([c for c in candidates if c['depth_mm']==z]) for z in depths}
     best=max(depths,key=lambda z:(len(layers[z][0]),-abs(z)))
     chosen=sorted(layers[best][0],key=lambda c:c['angle_degrees'])
@@ -80,6 +100,8 @@ def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, exclu
 
 def classify_pattern(windows, type_count=2):
     """Deterministic descriptor clustering and explicit angular-instance lists."""
+    windows=[{**w,'angle_degrees':float(np.degrees(np.arctan2(*polygon_centroid(w['boundary_uv'])[::-1]))%360)}
+             if 'boundary_uv' in w else w for w in windows]
     windows,excluded=partition_window_candidates(windows)
     if len(windows)<max(2,type_count):return {'status':'needs_review','reason':'Insufficient windows','groups':[]}
     values=np.asarray([[w['area_mm2'],w['radial_span_mm'],w['tangential_span_mm'],w['radius_mm']] for w in windows])
@@ -106,6 +128,7 @@ def classify_pattern(windows, type_count=2):
         groups.append({'type_id':chr(ord('A')+i),'window_ids':[w['window_id'] for w in members],
             'representative_window_id':representative['window_id'],'angles_degrees':angles,
             'relative_angles_degrees':[(a-representative['angle_degrees'])%360 for a in angles],
+            'uniform_relative_angles_degrees':[(j-angles.index(representative['angle_degrees']))*360/len(angles)%360 for j in range(len(angles))],
             'period_degrees':float(360/len(angles)),
             'equal_spacing_max_error_degrees':float(np.max(np.abs(gaps-360/len(angles))))})
     regular=all(g['equal_spacing_max_error_degrees']<=.15*g['period_degrees'] for g in groups)

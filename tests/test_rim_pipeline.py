@@ -155,6 +155,22 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(self.pipeline.validate_call('rim_list_spoke_objects','{}'))
         self.assertIsNone(self.pipeline.validate_call('rim_show_spoke_objects','{}'))
 
+    def test_axis_refinement_invalidates_old_blank_and_profile(self):
+        self.sections();self.analysis();self.fit();self.solid()
+        self.assertIsNone(self.pipeline.validate_call('rim_refine_axis_symmetry',json.dumps({'axis_call_directory':'/axis1','instance_count':5})))
+        self.record('rim_refine_axis_symmetry',{'status':'success','operation':'estimate_axis',
+                    'task_id':'t1','call_directory':'/refined_axis'})
+        self.assertEqual(self.pipeline.axis['call_directory'],'/refined_axis')
+        self.assertIsNone(self.pipeline.fit)
+        self.assertIsNone(self.pipeline.solid)
+        self.assertFalse(self.pipeline.completion()[0])
+
+    def test_batch_preparation_retains_each_actual_loft_reference(self):
+        self.record('rim_prepare_window_lofts',{'status':'success','analysis_path':'/windows',
+            'prepared_lofts':[{'window_id':'window_001','loft_path':'/loft1'},{'window_id':'window_002','loft_path':'/loft2'}]})
+        refs=[a for a in self.pipeline.window_artifacts if a.get('loft_path')]
+        self.assertEqual([a['loft_path'] for a in refs],['/loft1','/loft2'])
+
     def test_explicit_continuation_restores_history_but_new_mesh_does_not(self):
         session=ChatSession()
         outputs=[('rim_inspect_stl',{'status':'success','operation':'inspect_stl','task_id':'t','call_directory':'/inspect'}),

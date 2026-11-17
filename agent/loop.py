@@ -393,6 +393,8 @@ class AgentLoop:
                     # operations whose inputs were available before this reply;
                     # upstream reconstruction changes still require a new turn.
                     independent={"rim_fit_surface_patch","rim_build_window_cutting_solid",
+                        "rim_prepare_window_loft","rim_build_window_loft_cutter",
+                        "rim_prepare_window_lofts","rim_extend_window_cutter_through_disc","rim_create_window_cutter_set",
                         "rim_import_window_cutter","rim_preview_window_pattern","rim_validate_window_pattern",
                         "rim_create_cutter_pattern","rim_list_spoke_objects","rim_show_spoke_objects",
                         "rim_refine_surface_region","rim_analyze_window_pattern"}
