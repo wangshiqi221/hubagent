@@ -10,8 +10,6 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepAlgoAPI_Section.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
-#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BOPAlgo_MakerVolume.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -20,6 +18,8 @@
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepLib.hxx>
 #include <BRepGProp.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <BRepTools_History.hxx>
 #include <GProp_GProps.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -83,40 +83,66 @@ TopoDS_Face extendedSupport(const TopoDS_Face& face,double length)
     BRepBuilderAPI_MakeFace maker(surface,1e-6);
     return maker.IsDone()?maker.Face():TopoDS_Face();
 }
-int sourceId(const TopoDS_Shape& face,const std::array<TopTools_IndexedMapOfShape,6>& history)
+int sourceId(const TopoDS_Shape& face,const std::vector<TopTools_IndexedMapOfShape>& history)
 {
-    for(int i=0;i<6;++i) if(history[i].Contains(face)) return i;
+    for(int i=0;i<int(history.size());++i) if(history[i].Contains(face)) return i;
     return -1;
 }
-bool followsSamples(const TopoDS_Shape& solid,const std::array<std::vector<gp_Pnt>,4>& samples,double tolerance)
+bool followsSamples(const TopoDS_Shape& solid,const std::vector<std::vector<gp_Pnt>>& samples,double tolerance,
+                    const std::vector<TopTools_IndexedMapOfShape>& history,const std::array<double,4>& sideTolerances,
+                    double* maximum,QString* diagnostic)
 {
-    // Check the sharp candidate before filleting removes corner material.
-    for(const auto& patch:samples) {
-        const size_t count=std::min<size_t>(24,patch.size());int near=0;
+    // An interior point has zero distance to a solid. Check each patch against
+    // its own trimmed boundary face, not against the volume or another wall.
+    const int sides=int(samples.size());
+    BRep_Builder builder;std::vector<TopoDS_Compound> boundaries(sides);std::vector<int> counts(sides+2);
+    for(auto& boundary:boundaries) builder.MakeCompound(boundary);
+    for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next()) {
+        const int id=sourceId(ex.Current(),history);
+        if(id<0)return false;
+        ++counts[id];if(id<sides)builder.Add(boundaries[id],ex.Current());
+    }
+    for(int id=0;id<sides+2;++id) if((id<sides && counts[id]<1) || (id>=sides && counts[id]!=1)) {
+        if(diagnostic)*diagnostic=QStringLiteral("面源 %1 的裁剪区域数为 %2；必须保留全部原始拟合曲面及两个独立端盖。").arg(id+1).arg(counts[id]);
+        return false;
+    }
+    double worst=0;
+    for(size_t side=0;side<samples.size();++side) {
+        const double limit=sideTolerances[side]>0?sideTolerances[side]:tolerance;
+        const auto& patch=samples[side];
+        const size_t count=std::min<size_t>(64,patch.size());
         for(size_t k=0;k<count;++k) {
             const auto& point=patch[k*(patch.size()-1)/std::max<size_t>(1,count-1)];
-            BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(),solid);
-            if(distance.IsDone() && distance.Value()<=tolerance) ++near;
+            BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(),boundaries[side]);
+            if(!distance.IsDone())return false;
+            worst=std::max(worst,distance.Value());
+            if(distance.Value()>limit+1e-6) {
+                if(diagnostic)*diagnostic=QStringLiteral("侧面 %1 的原始选区不在其裁剪边界上：采样距离 %2 mm，容差 %3 mm。请修正主体面选区或相邻关系。")
+                    .arg(side+1).arg(distance.Value(),0,'g',8).arg(limit);
+                return false;
+            }
         }
-        if(near<int(std::ceil(count*0.8))) return false;
     }
+    if(maximum)*maximum=worst;
     return true;
 }
 }
 
-bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
-    const std::array<std::vector<gp_Pnt>,4>& samples,const WindowSolidOptions& options,
+bool buildWindowCuttingSolid(const std::vector<TopoDS_Face>& faces,
+    const std::vector<std::vector<gp_Pnt>>& samples,const WindowSolidOptions& options,
     WindowSolidResult* result,QString* error)
 {
     if(!result) return false;*result={};
+    const int sides=int(faces.size());
     auto fail=[&](const QString& message){result->solid.Nullify();if(error) *error=message;return false;};
+    if((sides!=3 && sides!=4) || samples.size()!=faces.size())return fail(QStringLiteral("需要三个或四个真实主体面及对应采样。"));
     if(!std::isfinite(options.minimumDepth) || !std::isfinite(options.maximumDepth)
        || options.maximumDepth<=options.minimumDepth || !std::isfinite(options.filletRadius)
        || options.filletRadius<0 || !std::isfinite(options.fitTolerance) || options.fitTolerance<=0)
         return fail(QStringLiteral("封口深度、拟合容差或圆角半径无效。"));
     Bnd_Box windowBox;gp_XYZ sum(0,0,0);int total=0;
-    for(int i=0;i<4;++i) {
-        if(faces[i].IsNull() || samples[i].empty()) return fail(QStringLiteral("请先分别拟合四个面。"));
+    for(int i=0;i<sides;++i) {
+        if(faces[i].IsNull() || samples[i].empty()) return fail(QStringLiteral("请先分别拟合各主体侧面。"));
         for(const auto& point:samples[i]) windowBox.Add(point);
         gp_XYZ patchSum(0,0,0);for(const auto& point:samples[i]) patchSum+=point.XYZ();
         sum+=patchSum/double(samples[i].size());++total;
@@ -125,15 +151,10 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
     double x0,y0,z0,x1,y1,z1;windowBox.Get(x0,y0,z0,x1,y1,z1);
     const double scale=std::max(gp_Pnt(x0,y0,z0).Distance(gp_Pnt(x1,y1,z1)),1.0);
     const gp_Vec axis(options.axisDirection);
-    double selectedMin=std::numeric_limits<double>::max(),selectedMax=-selectedMin;
-    for(const auto& patch:samples) for(const auto& point:patch) {
-        const double depth=gp_Vec(options.axisOrigin,point).Dot(axis);
-        selectedMin=std::min(selectedMin,depth);selectedMax=std::max(selectedMax,depth);
-    }
-    // Close the data-supported depth first. Beyond it, continue the end profiles
-    // by straight axial prisms, avoiding hundreds of mm of freeform extrapolation.
-    const double localMinimum=std::max(options.minimumDepth,selectedMin-std::max(scale*0.05,1.0));
-    const double localMaximum=std::min(options.maximumDepth,selectedMax+std::max(scale*0.05,1.0));
+    // The final cutter is bounded by the four fitted supports and two caps.
+    // Do not add axial prisms, stepped end profiles, or lofted replacement walls.
+    const double localMinimum=options.minimumDepth;
+    const double localMaximum=options.maximumDepth;
     if(localMaximum<=localMinimum) return fail(QStringLiteral("选区不在指定的轴向封口范围内。"));
     const double centerDepth=gp_Vec(options.axisOrigin,center).Dot(axis);
     const gp_Pnt seed=center.Translated(axis.Multiplied((localMinimum+localMaximum)*0.5-centerDepth));
@@ -141,19 +162,22 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
     try {
         for(double fraction:{0.0,0.125,0.25,0.5,0.75,1.0,1.5,2.0}) {
             const double length=scale*fraction;
-            std::array<TopoDS_Face,6> supports;
-            for(int i=0;i<4;++i) {
+            std::vector<TopoDS_Face> supports(sides+2);
+            for(int i=0;i<sides;++i) {
                 supports[i]=extendedSupport(faces[i],length);
                 if(supports[i].IsNull()) return fail(QStringLiteral("面 %1 的延伸失败。").arg(i+1));
+                const auto surface=BRep_Tool::Surface(supports[i]);
+                if(!surface->IsCNu(1) || !surface->IsCNv(1))
+                    return fail(QStringLiteral("拟合侧面 %1 未满足双参数方向 C1 连续性，不能用拼接层面替代。").arg(i+1));
             }
             for(int i=0;i<2;++i) {
                 const double depth=i?localMaximum:localMinimum;
                 const gp_Pnt origin=seed.Translated(axis.Multiplied(depth-(localMinimum+localMaximum)*0.5));
-                supports[4+i]=BRepBuilderAPI_MakeFace(gp_Pln(origin,options.axisDirection),-scale*3,scale*3,-scale*3,scale*3).Face();
+                supports[sides+i]=BRepBuilderAPI_MakeFace(gp_Pln(origin,options.axisDirection),-scale*3,scale*3,-scale*3,scale*3).Face();
             }
             BRep_Builder builder;TopoDS_Compound curves;builder.MakeCompound(curves);
-            std::array<std::set<int>,4> neighbors;QStringList pairs;int pairCount=0;
-            for(int i=0;i<4;++i) for(int j=i+1;j<4;++j) {
+            std::vector<std::set<int>> neighbors(sides);QStringList pairs;int pairCount=0;
+            for(int i=0;i<sides;++i) for(int j=i+1;j<sides;++j) {
                 BRepAlgoAPI_Section section(supports[i],supports[j],false);
                 section.Approximation(true);section.Build();
                 if(!section.IsDone()) continue;
@@ -176,8 +200,8 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
                 std::ostringstream errors;volume.DumpErrors(errors);
                 lastStage=QStringLiteral("封闭体构造失败：%1").arg(QString::fromStdString(errors.str()));continue;
             }
-            std::array<TopTools_IndexedMapOfShape,6> history;
-            for(int i=0;i<6;++i) {
+            std::vector<TopTools_IndexedMapOfShape> history(sides+2);
+            for(int i=0;i<sides+2;++i) {
                 history[i].Add(supports[i]);
                 for(const auto& shape:volume.Modified(supports[i]))
                     for(TopExp_Explorer ex(shape,TopAbs_FACE);ex.More();ex.Next()) history[i].Add(ex.Current());
@@ -189,15 +213,41 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
                 auto solid=TopoDS::Solid(solids(i));
                 if(!BRepLib::OrientClosedSolid(solid) || !isValidCuttingSolid(solid)) continue;
                 ++validCount;
+                // Remove only exact same-domain partition seams introduced by
+                // the Boolean splitter. This does not fit new surfaces, change
+                // their geometry, or conceal seams between distinct loft layers.
+                auto candidateHistory=history;
+                int rawFaces=0;for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next())++rawFaces;
+                if(rawFaces>sides+2) {
+                  ShapeUpgrade_UnifySameDomain unify(solid,true,true,false);unify.Build();
+                  if(!unify.Shape().IsNull() && unify.Shape().ShapeType()==TopAbs_SOLID && !unify.History().IsNull()) {
+                    for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next()) {
+                        const int owner=sourceId(ex.Current(),history);if(owner<0)continue;
+                        for(const auto& modified:unify.History()->Modified(ex.Current()))
+                            for(TopExp_Explorer face(modified,TopAbs_FACE);face.More();face.Next())candidateHistory[owner].Add(face.Current());
+                    }
+                    auto merged=TopoDS::Solid(unify.Shape());
+                    if(BRepLib::OrientClosedSolid(merged) && isValidCuttingSolid(merged))solid=merged;
+                  }
+                }
                 std::set<int> contributions;
-                for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next()) contributions.insert(sourceId(ex.Current(),history));
-                bool all=true;for(int id=0;id<6;++id) if(!contributions.count(id)) all=false;
+                for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next()) contributions.insert(sourceId(ex.Current(),candidateHistory));
+                bool all=true;for(int id=0;id<sides+2;++id) if(!contributions.count(id)) all=false;
                 if(!all || contributions.count(-1)) continue;
                 ++contributionCount;
-                if(!followsSamples(solid,samples,options.fitTolerance*2)) continue;
+                double deviation=0;QString boundaryDiagnostic;
+                if(!followsSamples(solid,samples,options.fitTolerance,candidateHistory,options.sideFitTolerances,&deviation,&boundaryDiagnostic)) {
+                    if(!boundaryDiagnostic.isEmpty())result->warning=boundaryDiagnostic;
+                    continue;
+                }
+                result->maximumBoundarySampleDeviation=std::max(result->maximumBoundarySampleDeviation,deviation);
+                // Filleting below must retain ownership after exact same-domain
+                // unification, too; otherwise the new boundary faces look orphaned.
+                for(int owner=0;owner<sides+2;++owner)
+                    for(int face=1;face<=candidateHistory[owner].Extent();++face)history[owner].Add(candidateHistory[owner](face));
                 candidates.push_back(solid);
             }
-            if(candidates.empty()) {lastStage=QStringLiteral("裁剪/封口检查：未找到同时由四个侧面和两个端盖围成的有效实体。候选体 %1；有效体 %2；六面贡献完整 %3；采样检查通过 0。")
+            if(candidates.empty()) {lastStage=QStringLiteral("裁剪/封口检查：未找到同时由全部主体侧面和两个端盖围成的有效实体。候选体 %1；有效体 %2；六面贡献完整 %3；采样检查通过 0。")
                 .arg(solids.Extent()).arg(validCount).arg(contributionCount);continue;}
             if(candidates.size()>1) {
                 std::vector<TopoDS_Solid> inside;
@@ -210,6 +260,9 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
             }
             TopoDS_Solid sharp=candidates.front();
             result->extensionLength=length;result->solid=sharp;
+            result->fittedSideFaceCount=0;result->fittedSideSurfaceCount=sides;result->capFaceCount=2;result->warning.clear();
+            for(TopExp_Explorer face(sharp,TopAbs_FACE);face.More();face.Next())
+                if(sourceId(face.Current(),history)<sides)++result->fittedSideFaceCount;
             if(options.filletRadius>0) {
                 TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
                 TopExp::MapShapesAndAncestors(sharp,TopAbs_EDGE,TopAbs_FACE,edgeFaces);
@@ -217,47 +270,21 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
                 for(int i=1;i<=edgeFaces.Extent();++i) {
                     std::set<int> owners;
                     for(const auto& face:edgeFaces.FindFromIndex(i)) owners.insert(sourceId(face,history));
-                    if(owners.size()!=2 || *owners.begin()<0 || *owners.rbegin()>=4) continue;
+                    if(owners.size()!=2 || *owners.begin()<0 || *owners.rbegin()>=sides) continue;
                     fillet.Add(options.filletRadius,TopoDS::Edge(edgeFaces.FindKey(i)));++count;
                 }
                 try {
-                    if(count>=4) fillet.Build();
+                    if(count>=sides) fillet.Build();
                     TopTools_IndexedMapOfShape roundedSolids;
-                    if(count>=4 && fillet.IsDone()) TopExp::MapShapes(fillet.Shape(),TopAbs_SOLID,roundedSolids);
+                    if(count>=sides && fillet.IsDone()) TopExp::MapShapes(fillet.Shape(),TopAbs_SOLID,roundedSolids);
                     QString validation;
                     if(roundedSolids.Extent()==1 && isValidCuttingSolid(roundedSolids(1),&validation)) {
                         result->solid=TopoDS::Solid(roundedSolids(1));result->filletApplied=true;
-                    } else result->warning=QStringLiteral("封闭实体已生成，但当前半径无法完成全部交接圆角；已保留无圆角实体。可减小半径重试。%1")
-                        .arg(validation.isEmpty()?QString():QStringLiteral("\n验证结果：")+validation);
+                    } else result->warning=QStringLiteral("封闭实体已生成，但当前半径无法完成全部交接圆角；已保留无圆角实体。圆角候选边 %2。可减小半径重试。%1")
+                        .arg(validation.isEmpty()?QString():QStringLiteral("\n验证结果：")+validation).arg(count);
                 } catch(const Standard_Failure&) {
                     result->warning=QStringLiteral("封闭实体已生成，圆角求解失败；已保留无圆角实体。");
                 }
-            }
-            // Find the planar axial end caps after rounding, and continue their
-            // exact profiles until both end caps are outside the target model.
-            std::vector<std::pair<TopoDS_Face,double>> ends;
-            for(TopExp_Explorer ex(result->solid,TopAbs_FACE);ex.More();ex.Next()) {
-                const auto face=TopoDS::Face(ex.Current());BRepAdaptor_Surface surface(face);
-                if(surface.GetType()!=GeomAbs_Plane) continue;
-                const auto plane=surface.Plane();
-                if(std::abs(plane.Axis().Direction().Dot(options.axisDirection))<1-1e-7) continue;
-                const double depth=gp_Vec(options.axisOrigin,plane.Location()).Dot(axis);
-                if(std::abs(depth-localMinimum)<1e-4 && localMinimum>options.minimumDepth+1e-6)
-                    ends.emplace_back(face,options.minimumDepth-localMinimum);
-                if(std::abs(depth-localMaximum)<1e-4 && localMaximum<options.maximumDepth-1e-6)
-                    ends.emplace_back(face,options.maximumDepth-localMaximum);
-            }
-            for(const auto& end:ends) {
-                BRepPrimAPI_MakePrism prism(end.first,axis.Multiplied(end.second));
-                if(!prism.IsDone()) return fail(QStringLiteral("端盖轮廓轴向延伸失败。"));
-                BRepAlgoAPI_Fuse fuse(result->solid,prism.Shape());fuse.Build();
-                if(!fuse.IsDone()) return fail(QStringLiteral("端部切削延伸体合并失败。"));
-                TopTools_IndexedMapOfShape combined;TopExp::MapShapes(fuse.Shape(),TopAbs_SOLID,combined);
-                if(combined.Extent()!=1) return fail(QStringLiteral("端部延伸后没有形成单一实体。"));
-                auto solid=TopoDS::Solid(combined(1));
-                if(!BRepLib::OrientClosedSolid(solid) || !isValidCuttingSolid(solid))
-                    return fail(QStringLiteral("端部延伸后的实体验证失败。"));
-                result->solid=solid;
             }
             bool frontCap=false,backCap=false;
             for(TopExp_Explorer ex(result->solid,TopAbs_FACE);ex.More();ex.Next()) {
@@ -269,13 +296,22 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
                 frontCap=frontCap || std::abs(depth-options.minimumDepth)<1e-4;
                 backCap=backCap || std::abs(depth-options.maximumDepth)<1e-4;
             }
-            if(!frontCap || !backCap) return fail(QStringLiteral("最终实体的端盖未到达指定模型两侧，不能作为贯穿切削工具。"));
+            if(!frontCap || !backCap) return fail(QStringLiteral("最终实体的端盖未到达指定封口深度，不能作为切削工具。"));
             if(error) error->clear();return true;
         }
-        return fail(lastStage+QStringLiteral("\n")+result->diagnostics+
+        return fail(lastStage+QStringLiteral("\n")+result->diagnostics+QStringLiteral("\n")+result->warning+
                     QStringLiteral("\n已保留交线预览与原四个面；未生成可导出的切削实体。"));
     } catch(const Standard_Failure& failure) {
         result->solid.Nullify();
         return fail(QStringLiteral("几何求解异常：%1\n%2").arg(QString::fromUtf8(failure.GetMessageString()),result->diagnostics));
     }
+}
+
+// Preserve the standalone four-selection GUI API. CadAgent may additionally use
+// three actual walls when the observed fourth arc is only a tip transition.
+bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
+    const std::array<std::vector<gp_Pnt>,4>& samples,const WindowSolidOptions& options,
+    WindowSolidResult* result,QString* error) {
+    return buildWindowCuttingSolid(std::vector<TopoDS_Face>(faces.begin(),faces.end()),
+        std::vector<std::vector<gp_Pnt>>(samples.begin(),samples.end()),options,result,error);
 }

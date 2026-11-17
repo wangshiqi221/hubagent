@@ -9,6 +9,7 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <TopExp_Explorer.hxx>
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Reader.hxx>
 #include <iostream>
@@ -35,7 +36,7 @@ int main()
     WindowSolidOptions options;options.minimumDepth=-3;options.maximumDepth=13;options.filletRadius=1;
     WindowSolidResult result;QString error;
     if(!buildWindowCuttingSolid(faces,samples,options,&result,&error)) {std::cerr<<error.toStdString();return 1;}
-    if(!isValidCuttingSolid(result.solid,&error) || !result.filletApplied) {std::cerr<<error.toStdString()<<result.warning.toStdString();return 2;}
+    if(!isValidCuttingSolid(result.solid,&error) || !result.filletApplied) {std::cerr<<error.toStdString()<<result.warning.toStdString()<<" volume="<<volume(result.solid);return 2;}
     auto blank=BRepPrimAPI_MakeBox(gp_Pnt(-10,-10,-2),20,20,14).Solid();
     BRepAlgoAPI_Cut cut(blank,result.solid);cut.Build();
     if(!cut.IsDone() || !BRepCheck_Analyzer(cut.Shape()).IsValid()
@@ -50,6 +51,9 @@ int main()
        || !isValidCuttingSolid(result.solid))return 8;
     options.filletRadius=0;
     if(!buildWindowCuttingSolid(faces,samples,options,&result,&error) || result.filletApplied)return 9;
+    int faceCount=0;for(TopExp_Explorer ex(result.solid,TopAbs_FACE);ex.More();ex.Next())++faceCount;
+    if(faceCount!=6 || result.fittedSideFaceCount!=4 || result.fittedSideSurfaceCount!=4 || result.capFaceCount!=2
+       || result.maximumBoundarySampleDeviation>1e-5)return 11;
     faces[0].Nullify();
     if(buildWindowCuttingSolid(faces,samples,options,&result,&error) || !result.solid.IsNull())return 10;
     std::cout<<"Tiny patch, capped solid, fillet, STEP roundtrip and boolean subtraction passed.\n";

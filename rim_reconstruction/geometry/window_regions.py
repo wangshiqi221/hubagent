@@ -48,6 +48,15 @@ def is_spoke_window(window, outer_radius):
             and np.linalg.norm(boundary,axis=1).max()>=.7*outer_radius)
 
 
+def main_wall_indices(window):
+    """A short tip transition is not an extra main wall of a triangular window."""
+    lengths=np.asarray([np.linalg.norm(np.diff(np.asarray(a),axis=0),axis=1).sum() for a in window['side_arcs_uv']])
+    shortest=int(np.argmin(lengths))
+    if len(lengths)==4 and lengths[shortest]<.15*np.median(np.delete(lengths,shortest)):
+        return [i for i in range(4) if i!=shortest]
+    return list(range(len(lengths)))
+
+
 def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, excluded_candidates=None, spoke_only=False):
     candidates=[]
     for section in sections:
@@ -92,6 +101,8 @@ def window_candidates(sections, outer_radius, *, minimum_radius_ratio=.15, exclu
         excluded_candidates.extend({**c,'exclusion_reason':'separate_small_span_and_area_family'} for c in layers[best][1])
     for i,c in enumerate(chosen):
         c['window_id']=f'window_{i+1:03d}'
+        c['main_wall_indices']=main_wall_indices(c)
+        c['main_wall_count']=len(c['main_wall_indices'])
         c['supporting_depths_mm']=sorted({other['depth_mm'] for other in candidates
             if min(abs(other['angle_degrees']-c['angle_degrees']),360-abs(other['angle_degrees']-c['angle_degrees']))<max(2.,90/max(1,len(chosen)))
             and abs(other['radius_mm']-c['radius_mm'])<.15*outer_radius})
@@ -138,17 +149,21 @@ def classify_pattern(windows, type_count=2):
         'warning':'Types and angular phases are geometric hypotheses; verify imported cutters before cutting.'}
 
 
-def select_side_regions(triangles, window, axis, band_mm, *, normal_axis_limit=.85, cancel_event=None):
+def select_side_regions(triangles, window, axis, band_mm, *, normal_axis_limit=.85, axial_band_mm=None, corner_exclusion_mm=None, normal_spread_degrees=35., cancel_event=None):
     """Restricted local wall candidates; interior triangle samples stay traceable."""
     tri=np.asarray(triangles);origin=np.asarray(axis['origin']);direction=np.asarray(axis['direction'],dtype=float);direction/=np.linalg.norm(direction)
     frame=window['frame'];u=np.asarray(frame['u_direction']);v=np.asarray(frame['v_direction'])
     centers=tri.mean(axis=1);delta=centers-origin
     uv=np.c_[delta@u,delta@v];depth=delta@direction
+    vertex_depth=(tri-origin)@direction
+    crosses_section=(vertex_depth.min(axis=1)<=window['depth_mm']+1e-6)&(vertex_depth.max(axis=1)>=window['depth_mm']-1e-6)
     normals=np.cross(tri[:,1]-tri[:,0],tri[:,2]-tri[:,0]);length=np.linalg.norm(normals,axis=1)
     good=length>1e-12;alignment=np.ones(len(tri));alignment[good]=np.abs(normals[good]@direction)/length[good]
     boundary=np.asarray(window['boundary_uv']);low=boundary.min(axis=0)-band_mm;high=boundary.max(axis=0)+band_mm
-    mask=good&(alignment<normal_axis_limit)&np.all((uv>=low)&(uv<=high),axis=1)&(np.abs(depth-window['depth_mm'])<=max(2*band_mm,.25*window['radial_span_mm']))
+    axial_band=max(2*band_mm,.25*window['radial_span_mm']) if axial_band_mm is None else axial_band_mm
+    mask=good&(alignment<normal_axis_limit)&np.all((uv>=low)&(uv<=high),axis=1)&(np.abs(depth-window['depth_mm'])<=axial_band)
     ids=np.flatnonzero(mask);regions=[]
+    main_sides=main_wall_indices(window)
     arcs=[]
     for values in window['side_arcs_uv']:
         a=np.asarray(values);parts=[]
@@ -166,17 +181,24 @@ def select_side_regions(triangles, window, axis, band_mm, *, normal_axis_limit=.
         # Exclude corners, where fillets and two walls meet.
         if len(selected):
             endpoint_distance=np.minimum(np.linalg.norm(uv[selected]-arcs[side][0],axis=1),np.linalg.norm(uv[selected]-arcs[side][-1],axis=1))
-            selected=selected[endpoint_distance>min(band_mm*.5,.1*np.linalg.norm(arcs[side][-1]-arcs[side][0]))]
+            exclusion=min(band_mm*.5,.1*np.linalg.norm(arcs[side][-1]-arcs[side][0])) if corner_exclusion_mm is None else corner_exclusion_mm
+            selected=selected[endpoint_distance>exclusion]
         initial_count=len(selected)
-        selected,quality=coherent_surface_patch(tri,selected)
+        seeds=selected[crosses_section[selected]]
+        if len(seeds):
+            midpoint=arcs[side][len(arcs[side])//2]
+            seed_distance=np.linalg.norm(uv[seeds]-midpoint,axis=1)
+            seeds=seeds[seed_distance<=seed_distance.min()+max(.25,band_mm*.5)]
+        selected,quality=coherent_surface_patch(tri,selected,seed_indices=seeds,normal_limit_degrees=normal_spread_degrees)
         regions.append({'region_id':f"{window['window_id']}_side_{side+1}",'window_id':window['window_id'],
+            'role':'main_wall' if side in main_sides else 'short_corner_transition',
             'side_index':side,'triangle_indices':selected.tolist(),'triangle_count':len(selected),
             'selection_quality':quality,'initial_triangle_count':initial_count,
-            'status':'candidate' if len(selected)>=2 and quality['retained_fraction']>=.2 else 'needs_review'})
+            'status':'candidate' if len(seeds) and len(selected)>=2 and quality['retained_fraction']>=.2 else 'needs_review'})
     return regions
 
 
-def coherent_surface_patch(triangles,indices):
+def coherent_surface_patch(triangles,indices,*,seed_indices=None,normal_limit_degrees=35.):
     """One connected, bounded-normal wall patch; never fit separate walls as one.
     Every exclusion is recorded. Fitting/extension is not validated outside it.
     """
@@ -185,10 +207,13 @@ def coherent_surface_patch(triangles,indices):
     tri=np.asarray(triangles)[ids];vectors=np.cross(tri[:,1]-tri[:,0],tri[:,2]-tri[:,0]);areas=np.linalg.norm(vectors,axis=1)
     normals=vectors/np.maximum(areas[:,None],1e-30)
     bins=np.rint(normals/.2).astype(int);groups={}
-    for i,key in enumerate(map(tuple,bins)):groups.setdefault(key,[]).append(i)
+    seed_mask=np.isin(ids,seed_indices) if seed_indices is not None else np.ones(len(ids),dtype=bool)
+    for i,key in enumerate(map(tuple,bins)):
+        if seed_mask[i]:groups.setdefault(key,[]).append(i)
+    if not groups:return ids[:0],{'retained_fraction':0.,'component_count':0,'normal_limit_degrees':35.,'seed_triangle_count':0}
     group=max(groups.values(),key=lambda values:float(areas[values].sum()))
     reference=np.sum(normals[group]*areas[group,None],axis=0);reference/=max(np.linalg.norm(reference),1e-30)
-    eligible=np.flatnonzero((normals@reference>=np.cos(np.radians(35)))&(areas>1e-12))
+    eligible=np.flatnonzero((normals@reference>=np.cos(np.radians(normal_limit_degrees)))&(areas>1e-12))
     adjacency={int(i):set() for i in eligible};edges={}
     for i in eligible:
         for a,b in ((0,1),(1,2),(2,0)):
@@ -204,7 +229,8 @@ def coherent_surface_patch(triangles,indices):
             for neighbor in adjacency[current]:
                 if neighbor in unseen:unseen.remove(neighbor);todo.append(neighbor)
         components.append(component)
-    best=max(components,key=lambda values:float(areas[values].sum())) if components else []
+    best=max(components,key=lambda values:(int(seed_mask[values].sum()),float(areas[values].sum()))) if components else []
     selected=ids[sorted(best)]
     return selected,{'retained_fraction':len(selected)/len(ids),'component_count':len(components),
-        'normal_limit_degrees':35.,'excluded_triangle_count':len(ids)-len(selected)}
+        'normal_limit_degrees':normal_limit_degrees,'excluded_triangle_count':len(ids)-len(selected),
+        'seed_triangle_count':int(seed_mask[best].sum()) if best else 0}

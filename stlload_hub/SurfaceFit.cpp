@@ -6,6 +6,11 @@
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <GeomConvert.hxx>
 #include <Geom_BoundedSurface.hxx>
+#include <Geom_BezierSurface.hxx>
+#include <TColgp_Array2OfPnt.hxx>
+#include <math_Gauss.hxx>
+#include <math_Matrix.hxx>
+#include <math_Vector.hxx>
 #include <GeomPlate_PointConstraint.hxx>
 #include <GeomPlate_Surface.hxx>
 #include <GeomPlate_MakeApprox.hxx>
@@ -16,6 +21,64 @@
 #include <set>
 #include <tuple>
 #include <limits>
+#include <array>
+
+namespace {
+double bernstein(int degree,int i,double t) {
+    double choose=1;for(int k=1;k<=i;++k)choose=choose*(degree-k+1)/k;
+    return choose*std::pow(t,i)*std::pow(1-t,degree-i);
+}
+// A single smooth height patch has controlled extrapolation, unlike an
+// underconstrained collection of plate approximation patches. It is still fit
+// only to the actual selected 3D points and checked against every one of them.
+bool fitHeightPatch(const std::vector<gp_Pnt>& points,const Handle(Geom_Plane)& plane,
+                    double tolerance,SurfaceFitResult* result) {
+    const auto frame=plane->Position();const gp_Vec u(frame.XDirection()),v(frame.YDirection()),normal(frame.Direction());
+    std::vector<std::array<double,3>> coordinates;
+    double u0=1e100,u1=-u0,v0=u0,v1=-u0;
+    for(const auto& point:points) {
+        const gp_Vec delta(frame.Location(),point);const double a=delta.Dot(u),b=delta.Dot(v);
+        coordinates.push_back({a,b,delta.Dot(normal)});u0=std::min(u0,a);u1=std::max(u1,a);v0=std::min(v0,b);v1=std::max(v1,b);
+    }
+    if(u1-u0<1e-8 || v1-v0<1e-8)return false;
+    Handle(Geom_BSplineSurface) best;double bestError=tolerance;
+    for(int degree:{2,3,4}) {
+        const int side=degree+1,count=side*side;if(points.size()<size_t(count))continue;
+        math_Matrix matrix(1,count,1,count,0.);math_Vector rhs(1,count,0.),solution(1,count,0.);
+        std::vector<double> basis(count);
+        for(const auto& point:coordinates) {
+            const double a=(point[0]-u0)/(u1-u0),b=(point[1]-v0)/(v1-v0);
+            for(int i=0;i<side;++i)for(int j=0;j<side;++j)basis[i*side+j]=bernstein(degree,i,a)*bernstein(degree,j,b);
+            for(int i=0;i<count;++i) {
+                rhs(i+1)+=basis[i]*point[2];
+                for(int j=0;j<count;++j)matrix(i+1,j+1)+=basis[i]*basis[j];
+            }
+        }
+        for(int i=1;i<=count;++i)matrix(i,i)+=points.size()*1e-8;
+        math_Gauss solve(matrix);if(!solve.IsDone())continue;solve.Solve(rhs,solution);
+        TColgp_Array2OfPnt poles(1,side,1,side);
+        for(int i=0;i<side;++i)for(int j=0;j<side;++j) {
+            const gp_Vec delta=u.Multiplied(u0+(u1-u0)*i/degree)+v.Multiplied(v0+(v1-v0)*j/degree)
+                +normal.Multiplied(solution(i*side+j+1));
+            poles.SetValue(i+1,j+1,frame.Location().Translated(delta));
+        }
+        auto surface=GeomConvert::SurfaceToBSplineSurface(new Geom_BezierSurface(poles));
+        double maximum=0;bool valid=true;
+        for(const auto& point:points) {
+            GeomAPI_ProjectPointOnSurf projection(point,surface);
+            if(!projection.NbPoints()) {valid=false;break;}
+            maximum=std::max(maximum,projection.LowerDistance());if(maximum>tolerance) {valid=false;break;}
+        }
+        if(valid && maximum<=bestError) {
+            best=surface;bestError=maximum;
+            if(maximum<=tolerance*.1)break;
+        }
+    }
+    if(best.IsNull())return false;
+    result->surface=best;result->maximumDeviation=bestError;result->constraintCount=int(points.size());
+    result->method="regularized_single_bezier_patch";return true;
+}
+}
 
 bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
                      SurfaceFitResult* result, QString* error, int maxIterations)
@@ -23,7 +86,7 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
     if (!result) return false;
     *result = {};
     auto fail = [&](const QString& message) { if (error) *error = message; return false; };
-    if(maxIterations<1 || maxIterations>32) return fail(QStringLiteral("拟合迭代预算必须在1到32之间。"));
+    if(maxIterations<1 || maxIterations>64) return fail(QStringLiteral("拟合迭代预算必须在1到64之间。"));
     if (!std::isfinite(tolerance) || tolerance <= 0)
         return fail(QStringLiteral("曲面容差必须为正数。"));
     std::vector<gp_Pnt> points;
@@ -47,12 +110,19 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
             const auto plane=average.Plane();
             double maximum=0;
             for(const auto& point:points) maximum=std::max(maximum,plane->Pln().Distance(point));
+            // A plane barely inside the tolerance can erase real wall curvature
+            // and displace its later intersections. Prefer an accurate smooth
+            // patch before accepting that marginal planar approximation.
+            if(maximum>std::min(.05,tolerance*.1) && fitHeightPatch(points,plane,tolerance,result)) {
+                if(error)error->clear();return true;
+            }
             if(maximum<=tolerance) {
                 double u0,u1,v0,v1; average.MinMaxBox(u0,u1,v0,v1);
                 const double margin=std::max(1e-5,std::max(u1-u0,v1-v0)*0.02);
                 Handle(Geom_RectangularTrimmedSurface) trimmed=new Geom_RectangularTrimmedSurface(plane,u0-margin,u1+margin,v0-margin,v1+margin);
                 result->surface=GeomConvert::SurfaceToBSplineSurface(trimmed);
                 result->maximumDeviation=maximum; result->planar=true;
+                result->method="plane";
                 if(error) error->clear();return true;
             }
         }
@@ -80,6 +150,7 @@ bool fitSurfacePatch(const std::vector<gp_Pnt>& input, double tolerance,
             result->maximumDeviation=maximum;
             if (maximum<=tolerance) {
                 result->surface=surface; result->maximumDeviation=maximum;
+                result->method="geom_plate_bspline";
                 if (error) error->clear();
                 return true;
             }

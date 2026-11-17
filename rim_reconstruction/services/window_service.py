@@ -49,6 +49,10 @@ class WindowWorkerAdapter(CppWorkerAdapter):
         data=_read_json(Path(report['path']),self.max_artifact_bytes)
         if data.get('task_id')!=request['task_id'] or data.get('operation')!=request['operation']:raise ValueError('Window artifact identity mismatch')
         if request['operation']=='build_window_cutter' and (data.get('solid_count')!=1 or not data.get('closed_solid') or data.get('volume_mm3',0)<=0):raise ValueError('Not a valid single cutter')
+        if request['operation']=='build_window_cutter' and (data.get('method') not in ('four_fitted_surface_intersection','fitted_surface_intersection')
+                or data.get('fitted_side_surface_count') not in (3,4) or data.get('fitted_side_face_count',0)<data.get('fitted_side_surface_count',99)
+                or data.get('cap_face_count')!=2 or data.get('side_surface_continuity')!='C1'):
+            raise ValueError('Cutter must come from three or four actual fitted side surfaces and two caps, without lofts or added prisms')
 
 
 def _manifest(path,adapter,allow_legacy=False):
@@ -63,12 +67,16 @@ def _manifest(path,adapter,allow_legacy=False):
 
 
 def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
-    _parameters(parameters,('axis_call_directory','depths_mm'),('band_mm','type_count','normal_axis_limit'))
+    _parameters(parameters,('axis_call_directory','depths_mm'),('band_mm','type_count','normal_axis_limit','axial_band_mm','corner_exclusion_mm','normal_spread_degrees'))
     adapter=_adapter(adapter);request,result=_load_call(parameters['axis_call_directory'],'estimate_axis',adapter)
     from ..geometry.transverse_sections import load_stl,section_triangles
     from ..geometry.window_regions import window_candidates,classify_pattern,select_side_regions
     band=_positive(parameters.get('band_mm',3.),'band_mm');limit=parameters.get('normal_axis_limit',.85)
+    axial_band=_positive(parameters['axial_band_mm'],'axial_band_mm') if 'axial_band_mm' in parameters else None
     if type(limit) not in (int,float) or not 0<limit<1:raise ValueError('normal_axis_limit must be between 0 and 1')
+    corner=_positive(parameters['corner_exclusion_mm'],'corner_exclusion_mm',True) if 'corner_exclusion_mm' in parameters else None
+    spread=_positive(parameters.get('normal_spread_degrees',35.),'normal_spread_degrees')
+    if spread>=90:raise ValueError('normal_spread_degrees must be less than 90')
     types=parameters.get('type_count',2)
     if type(types)!=int or not 1<=types<=8:raise ValueError('type_count must be 1..8')
     axis=result['metrics']['axis_candidate'];source=Path(request['stl_path']);tri=load_stl(source,cancel_event)
@@ -78,7 +86,7 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
     excluded=[]
     windows=window_candidates(sections['sections'],outer,excluded_candidates=excluded,spoke_only=True);regions=[]
     for window in windows:
-        check_cancelled(cancel_event);regions.extend(select_side_regions(tri,window,axis,band,normal_axis_limit=limit,cancel_event=cancel_event))
+        check_cancelled(cancel_event);regions.extend(select_side_regions(tri,window,axis,band,normal_axis_limit=limit,axial_band_mm=axial_band,corner_exclusion_mm=corner,normal_spread_degrees=spread,cancel_event=cancel_event))
     root=adapter.call_root/'window_jobs'/('job_'+uuid.uuid4().hex);root.mkdir(parents=True)
     data={'algorithm':'window_regions_v2','source_stl':str(source.resolve()),'source_sha256':_hash(source),
         'task_id':request['task_id'],'axis':axis,'parameters':parameters,'axis_call_directory':parameters['axis_call_directory'],
@@ -103,13 +111,16 @@ def analyze_window_regions(parameters,*,adapter=None,cancel_event=None):
 
 
 def refine_surface_region(parameters,*,adapter=None,cancel_event=None):
-    _parameters(parameters,('analysis_path','window_id','band_mm'),('normal_axis_limit',))
+    _parameters(parameters,('analysis_path','window_id','band_mm'),('normal_axis_limit','axial_band_mm','corner_exclusion_mm','normal_spread_degrees'))
     adapter=_adapter(adapter);old=_manifest(parameters['analysis_path'],adapter,allow_legacy=True)
     if parameters['window_id'] not in [w['window_id'] for w in old['windows']]:raise ValueError('Unknown window')
     # Generate a new immutable analysis with fresh geometry selection, never edit
     # the previous artifact or reuse fits made against a different region.
     p={**old['parameters'],'band_mm':parameters['band_mm']}
     if 'normal_axis_limit' in parameters:p['normal_axis_limit']=parameters['normal_axis_limit']
+    if 'axial_band_mm' in parameters:p['axial_band_mm']=_positive(parameters['axial_band_mm'],'axial_band_mm')
+    for key in ('corner_exclusion_mm','normal_spread_degrees'):
+        if key in parameters:p[key]=parameters[key]
     return analyze_window_regions(p,adapter=adapter,cancel_event=cancel_event)
 
 
@@ -137,8 +148,29 @@ def refine_axis_symmetry(parameters,*,adapter=None,cancel_event=None):
     return refine_model_axis(parameters,adapter=adapter,cancel_event=cancel_event)
 
 
+def _fit_tolerance_fallback(parameters,data,adapter,tolerance):
+    if tolerance<=.5:return None
+    if tolerance>1:raise ValueError('Surface tolerance must not exceed the authorized 1.0 mm fallback')
+    directory=parameters.get('retry_from_call_directory')
+    if not isinstance(directory,str):raise ValueError('A failed 0.5 mm call for this same region is required before using 1.0 mm')
+    call=Path(directory).resolve()
+    if not call.is_relative_to(adapter.call_root.resolve()):raise ValueError('Fallback evidence must be an actual CadAgent call')
+    request=_read_json(call/'request.json',1024*1024);result=_read_json(call/'result.json',adapter.max_result_bytes)
+    error=result.get('error') or {};details=error.get('details') or {}
+    if (request.get('operation')!='fit_window_surface' or request.get('task_id')!=data['task_id']
+            or request.get('tolerance_mm')!=.5 or result.get('status')!='error'
+            or error.get('code')!='SURFACE_FIT_FAILED' or details.get('maximum_deviation_mm',0)<=.5):
+        raise ValueError('Fallback evidence is not a numerical surface-fit failure at 0.5 mm')
+    samples_path=Path(request['samples_path']).resolve()
+    if samples_path.parent!=Path(parameters['analysis_path']).resolve().parent:raise ValueError('Fallback evidence belongs to another analysis')
+    samples=_read_json(samples_path,adapter.max_artifact_bytes)
+    if samples.get('region_id')!=parameters['region_id'] or samples.get('source_sha256')!=data['source_sha256']:
+        raise ValueError('Fallback evidence belongs to another source or region')
+    return str(call)
+
+
 def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
-    _parameters(parameters,('analysis_path','region_id'),('tolerance_mm','max_iterations'))
+    _parameters(parameters,('analysis_path','region_id'),('tolerance_mm','max_iterations','retry_from_call_directory'))
     adapter=_adapter(adapter);data=_manifest(parameters['analysis_path'],adapter)
     from ..geometry.window_regions import partition_window_candidates
     _,excluded=partition_window_candidates(data['windows'])
@@ -153,18 +185,22 @@ def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     region=regions[0];tri=load_stl(data['source_stl'],cancel_event)[region['triangle_indices']]
     points=np.concatenate([tri.reshape(-1,3),tri.mean(axis=1),((tri+np.roll(tri,-1,axis=1))/2).reshape(-1,3)])
     tolerance=_positive(parameters.get('tolerance_mm',.5),'tolerance_mm')
-    budget=parameters.get('max_iterations',8)
-    if type(budget)!=int or not 1<=budget<=32:raise ValueError('max_iterations must be 1..32')
+    fallback=_fit_tolerance_fallback(parameters,data,adapter,tolerance)
+    budget=parameters.get('max_iterations',16)
+    if type(budget)!=int or not 1<=budget<=64:raise ValueError('max_iterations must be 1..64')
     sample_path=Path(parameters['analysis_path']).parent/('samples_'+uuid.uuid4().hex+'.json')
     _save(sample_path,{'samples':points.tolist(),'region_id':region['region_id'],'source_sha256':data['source_sha256']})
     worker=WindowWorkerAdapter.from_base(adapter)
+    if budget>32:worker.timeout_seconds=max(worker.timeout_seconds,15*budget)
     response=worker.run({'schema_version':1,'operation':'fit_window_surface','task_id':data['task_id'],'unit':'mm',
         'stl_path':data['source_stl'],'samples_path':str(sample_path),'tolerance_mm':tolerance,'max_iterations':budget},cancel_event=cancel_event)
     report=next(a['path'] for a in response.result['artifacts'] if a['type']=='window_report')
     record=Path(report).parent/'provenance.json';_save(record,{'analysis_path':parameters['analysis_path'],
         'region_id':region['region_id'],'window_id':region['window_id'],'geometry_sha256':_hash(Path(report).parent/'geometry.brep'),
+        'fallback_from_call_directory':fallback,
         'report_sha256':_hash(report)})
-    return {'status':'success','surface_report':report,**response.result['metrics']}
+    depths=(points-np.asarray(data['axis']['origin']))@np.asarray(data['axis']['direction'])
+    return {'status':'success','surface_report':report,'sample_depth_range_mm':[float(depths.min()),float(depths.max())],**response.result['metrics']}
 
 
 def _surface_report(path,adapter):
@@ -176,28 +212,49 @@ def _surface_report(path,adapter):
 
 
 def build_window_cutter(parameters,*,adapter=None,cancel_event=None):
-    _parameters(parameters,('surface_reports',),('fillet_radius_mm','axial_margin_mm'))
+    _parameters(parameters,('surface_reports',),('fillet_radius_mm','axial_margin_mm','axial_depth_range_mm','boundary_tolerance_mm'))
     adapter=_adapter(adapter);paths=parameters['surface_reports']
-    if not isinstance(paths,list) or len(paths)!=4 or len(set(paths))!=4:raise ValueError('Select exactly four distinct surface reports')
+    if not isinstance(paths,list) or len(paths) not in (3,4) or len(set(paths))!=len(paths):raise ValueError('Select three or four distinct main-wall surface reports')
     reports=[_surface_report(p,adapter) for p in paths];provenances=[p for _,p in reports]
-    if len({p['analysis_path'] for p in provenances})!=1 or len({p['window_id'] for p in provenances})!=1 or len({p['region_id'] for p in provenances})!=4:raise ValueError('Four supports must belong to one window and analysis')
+    if any(r.get('tolerance_mm',2)>1 or r.get('maximum_deviation_mm',2)>r.get('tolerance_mm',0) for r,_ in reports):
+        raise ValueError('All four fitted surfaces must satisfy their declared tolerance, at most 1.0 mm')
+    if len({p['analysis_path'] for p in provenances})!=1 or len({p['window_id'] for p in provenances})!=1 or len({p['region_id'] for p in provenances})!=len(paths):raise ValueError('All supports must belong to one window and analysis')
     data=_manifest(provenances[0]['analysis_path'],adapter)
+    for report,provenance in reports:
+        _fit_tolerance_fallback({'analysis_path':provenance['analysis_path'],'region_id':provenance['region_id'],
+            'retry_from_call_directory':provenance.get('fallback_from_call_directory')},data,adapter,report['tolerance_mm'])
     from ..geometry.window_regions import is_spoke_window
     window=next(w for w in data['windows'] if w['window_id']==provenances[0]['window_id'])
+    from ..geometry.window_regions import main_wall_indices
+    omitted=[]
+    if len(paths)==3:
+        expected={f"{window['window_id']}_side_{i+1}" for i in main_wall_indices(window)}
+        if len(expected)!=3 or {p['region_id'] for p in provenances}!=expected:
+            raise ValueError('Three supports are allowed only for the three observed main walls; do not arbitrarily omit a wall')
+        omitted=[r['region_id'] for r in data['regions'] if r['window_id']==window['window_id'] and r['region_id'] not in expected]
     if not is_spoke_window(window,data['outer_radius_mm']):raise ValueError('Central-hole supports cannot form a spoke cutter')
     from ..geometry.window_regions import partition_window_candidates
     _,excluded=partition_window_candidates(data['windows'])
     if provenances[0]['window_id'] in {w['window_id'] for w in excluded}:
         raise ValueError('Small-feature supports cannot be used for a spoke-window cutter. Rerun window analysis.')
     margin=_positive(parameters.get('axial_margin_mm',max(1.,.02*(data['axial_range_mm'][1]-data['axial_range_mm'][0]))),'axial_margin_mm')
+    bounds=parameters.get('axial_depth_range_mm',[data['axial_range_mm'][0]-margin,data['axial_range_mm'][1]+margin])
+    if (not isinstance(bounds,list) or len(bounds)!=2 or any(type(v) not in (int,float) or not np.isfinite(v) for v in bounds)
+            or bounds[0]>=bounds[1]):raise ValueError('axial_depth_range_mm must contain two increasing finite signed depths')
     worker=WindowWorkerAdapter.from_base(adapter)
-    response=worker.run({'schema_version':1,'operation':'build_window_cutter','unit':'mm','task_id':data['task_id'],
+    request={'schema_version':1,'operation':'build_window_cutter','unit':'mm','task_id':data['task_id'],
         'stl_path':data['source_stl'],'surface_reports':paths,'axis':data['axis'],
-        'minimum_depth_mm':data['axial_range_mm'][0]-margin,'maximum_depth_mm':data['axial_range_mm'][1]+margin,
+        'minimum_depth_mm':bounds[0],'maximum_depth_mm':bounds[1],
         'tolerance_mm':max(r['tolerance_mm'] for r,_ in reports),
-        'fillet_radius_mm':_positive(parameters.get('fillet_radius_mm',0.),'fillet_radius_mm',True)},cancel_event=cancel_event)
+        'fillet_radius_mm':_positive(parameters.get('fillet_radius_mm',0.),'fillet_radius_mm',True)}
+    if 'boundary_tolerance_mm' in parameters:
+        tolerance=_positive(parameters['boundary_tolerance_mm'],'boundary_tolerance_mm')
+        if tolerance>1:raise ValueError('Boundary tolerance must not exceed the authorized 1.0 mm')
+        request['boundary_tolerance_mm']=tolerance
+    response=worker.run(request,cancel_event=cancel_event)
     report=next(a['path'] for a in response.result['artifacts'] if a['type']=='window_report')
     _save(Path(report).parent/'cutter_provenance.json',{'analysis_path':provenances[0]['analysis_path'],
         'window_id':provenances[0]['window_id'],'surface_reports':paths,'report_sha256':_hash(report),
+        'omitted_corner_regions':omitted,
         'geometry_sha256':_hash(Path(report).parent/'geometry.brep')})
     return {'status':'success','cutter_report':report,**response.result['metrics']}

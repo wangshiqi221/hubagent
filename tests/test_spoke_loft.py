@@ -48,71 +48,38 @@ class SpokeGeometryTests(unittest.TestCase):
         self.assertFalse(axis['confirmed'])
 
 
-@unittest.skipIf(App is None,'FreeCAD Python required')
-class ClosedLoftTests(unittest.TestCase):
-    def test_disc_clearance_opens_inner_remnant_without_cutting_rear_ring(self):
-        import Part
-        from rim_reconstruction.services.window_cad_service import import_window_cutter,extend_window_cutter_through_disc
-        root=Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory(dir=root/'runtime') as temp:
-            base=Path(temp);calls=base/'calls';calls.mkdir();job=calls/'job';job.mkdir()
-            source=base/'mesh.stl';source.write_text('solid sample\nendsolid sample')
-            axis={'origin':[0,0,0],'direction':[0,0,1],'outer_radius_mm':10}
-            analysis=job/'windows.json';_save(analysis,{'algorithm':'window_regions_v2','source_stl':str(source),
-                'source_sha256':_hash(source),'axis':axis});analysis.with_suffix('.sha256').write_text(_hash(analysis))
-            fit=base/'fits'/'fit.json';fit.parent.mkdir();fit.write_text('{}')
-            _save(base/'request.json',{'axis':axis})
-            doc=App.newDocument('DiscClearanceTest')
-            try:
-                blank=doc.addObject('PartDesign::Body','Blank');feature=blank.newObject('PartDesign::Feature','Base')
-                cylinder=lambda radius,height:Part.makeCylinder(radius,height,App.Vector(),App.Vector(1,0,0))
-                feature.Shape=cylinder(10,2).fuse(cylinder(5,5)).fuse(cylinder(10,12).cut(cylinder(8,12)))
-                blank.Placement=App.Placement(App.Vector(),App.Rotation(App.Vector(1,0,0),App.Vector(0,0,1)))
-                feature.addProperty('App::PropertyString','SourceFitPath');feature.SourceFitPath=str(fit);doc.recompute()
-                cutter=Part.makeBox(4,2,4,App.Vector(3,-1,-1));geometry=job/'geometry.brep';cutter.exportBrep(str(geometry))
-                report=job/'geometry.json';_save(report,{'operation':'build_window_cutter','axis':axis,
-                    'axial_scope':'observed_front_window_band','required_axial_range_mm':[-1,3],
-                    'geometry_path':str(geometry),'volume_mm3':cutter.Volume})
-                _save(job/'cutter_provenance.json',{'analysis_path':str(analysis),'window_id':'window_001',
-                    'report_sha256':_hash(report),'geometry_sha256':_hash(geometry)})
-                adapter=CppWorkerAdapter(root/'stlload_hub/build_surface/closed_cutter/geometry_worker.exe',calls,base_directory=root)
-                old=import_window_cutter({'document_name':doc.Name,'cutter_report':str(report)},adapter=adapter)
-                ray=Part.makeCylinder(.05,20,App.Vector(4,0,-2))
-                self.assertGreater(blank.Shape.cut(cutter).common(ray).Volume,.01)
-                new=extend_window_cutter_through_disc({'document_name':doc.Name,'blank_name':blank.Name,
-                    'cutter_name':old['cutter_name']},adapter=adapter)
-                result=blank.Shape.cut(doc.getObject(new['cutter_name']).Shape)
-                self.assertTrue(result.isValid());self.assertEqual(len(result.Solids),1)
-                self.assertLess(result.common(ray).Volume,1e-6)
-                ring=Part.makeCylinder(10,12).cut(Part.makeCylinder(8,12))
-                self.assertAlmostEqual(result.common(ring).Volume,blank.Shape.common(ring).Volume,places=4)
-                self.assertTrue(new['rear_clearance']['empty_separator_band_verified'])
-            finally:App.closeDocument(doc.Name)
+class SurfaceOnlyPolicyTests(unittest.TestCase):
+    def test_one_mm_fallback_requires_real_same_region_half_mm_failure(self):
+        from types import SimpleNamespace
+        from rim_reconstruction.services.window_service import _fit_tolerance_fallback
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'runtime') as temp:
+            root=Path(temp);call=root/'call';call.mkdir();job=root/'job';job.mkdir()
+            samples=job/'samples.json';_save(samples,{'region_id':'wall_1','source_sha256':'mesh'})
+            _save(call/'request.json',{'operation':'fit_window_surface','task_id':'t','tolerance_mm':.5,'samples_path':str(samples)})
+            failure={'status':'error','error':{'code':'SURFACE_FIT_FAILED','details':{'maximum_deviation_mm':.7}}}
+            _save(call/'result.json',failure)
+            adapter=SimpleNamespace(call_root=root,max_result_bytes=10000,max_artifact_bytes=10000)
+            data={'task_id':'t','source_sha256':'mesh'}
+            args={'analysis_path':str(job/'windows.json'),'region_id':'wall_1','retry_from_call_directory':str(call)}
+            self.assertEqual(_fit_tolerance_fallback(args,data,adapter,1.),str(call))
+            with self.assertRaises(ValueError):_fit_tolerance_fallback({**args,'region_id':'wall_2'},data,adapter,1.)
+            with self.assertRaises(ValueError):_fit_tolerance_fallback({k:v for k,v in args.items() if k!='retry_from_call_directory'},data,adapter,1.)
+            _save(call/'result.json',{'status':'success'})
+            with self.assertRaises(ValueError):_fit_tolerance_fallback(args,data,adapter,1.)
 
-    def test_measured_sections_produce_single_solid_and_verified_provenance(self):
-        root=Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory(dir=root/'runtime') as temp:
-            base=Path(temp);calls=base/'calls';calls.mkdir();job=calls/'job';job.mkdir()
-            source=base/'mesh.stl';source.write_text('solid sample\nendsolid sample')
-            axis={'origin':[0,0,0],'direction':[0,0,1]}
-            analysis=job/'windows.json'
-            _save(analysis,{'algorithm':'window_regions_v2','task_id':'t','source_stl':str(source),
-                'source_sha256':_hash(source),'axis':axis,'axial_range_mm':[-5,5]})
-            analysis.with_suffix('.sha256').write_text(_hash(analysis))
-            layers=[]
-            for depth in [-1,0,1]:
-                theta=np.arange(80)*2*np.pi/80
-                layers.append({'depth_mm':depth,'boundary_uv':np.c_[6+2*np.cos(theta),1.5*np.sin(theta)].tolist(),
-                    'frame':{'origin':[0,0,depth],'u_direction':[1,0,0],'v_direction':[0,1,0]}})
-            path=job/'loft_sections.json';_save(path,{'source_sha256':_hash(source),'analysis_path':str(analysis),
-                'window_id':'window_001','layers':layers})
-            path.with_suffix('.sha256').write_text(_hash(path))
-            adapter=CppWorkerAdapter(root/'stlload_hub/build_surface/closed_cutter/geometry_worker.exe',calls,base_directory=root)
-            result=build_window_loft_cutter({'loft_path':str(path),'tolerance_mm':.05},adapter=adapter)
-            self.assertEqual(result['solid_count'],1)
-            self.assertLessEqual(result['maximum_section_deviation_mm'],.05)
-            self.assertGreaterEqual(result['maximum_section_deviation_mm'],0)
-            self.assertGreater(result['volume_mm3'],0)
-            report=Path(result['cutter_report'])
-            provenance=json.loads((report.parent/'cutter_provenance.json').read_text())
-            self.assertEqual(provenance['geometry_sha256'],_hash(report.parent/'geometry.brep'))
+    def test_layered_routes_are_not_available_to_cadagent(self):
+        from rim_reconstruction.window_tools import schemas,BACKGROUND,MAIN,DISABLED_RECONSTRUCTION_TOOLS,dispatch_window_tool
+        names={d['function']['name'] for d in schemas()}
+        self.assertFalse(names & DISABLED_RECONSTRUCTION_TOOLS)
+        self.assertFalse((set(BACKGROUND)|set(MAIN)) & DISABLED_RECONSTRUCTION_TOOLS)
+        for name in DISABLED_RECONSTRUCTION_TOOLS:
+            result=json.loads(dispatch_window_tool(name,'{}'))
+            self.assertEqual(result['status'],'error')
+            self.assertIn('disabled',result['error']['message'])
+
+    def test_legacy_direct_generators_are_disabled(self):
+        from rim_reconstruction.services.window_loft_service import prepare_window_loft,prepare_window_lofts,build_window_loft_cutter
+        from rim_reconstruction.services.window_cad_service import extend_window_cutter_through_disc
+        for function in [prepare_window_loft,prepare_window_lofts,build_window_loft_cutter,extend_window_cutter_through_disc]:
+            with self.assertRaisesRegex(ValueError,'Disabled'):
+                function({})

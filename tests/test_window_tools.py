@@ -13,6 +13,12 @@ EXE=ROOT/'stlload_hub/build_surface/closed_cutter/geometry_worker.exe'
 
 
 class WindowGeometryTests(unittest.TestCase):
+    def test_actual_section_seed_beats_larger_unrelated_patch(self):
+        tri=np.array([[[0,0,0],[1,0,0],[1,1,0]],[[0,0,0],[1,1,0],[0,1,0]],
+                      [[100,0,0],[120,0,0],[120,20,0]],[[100,0,0],[120,20,0],[100,20,0]]],float)
+        selected,quality=coherent_surface_patch(tri,np.arange(4),seed_indices=np.array([0,1]))
+        self.assertEqual(selected.tolist(),[0,1])
+        self.assertEqual(quality['seed_triangle_count'],2)
     def test_recorded_pockets_are_not_second_spoke_type(self):
         from rim_reconstruction.geometry.window_regions import partition_window_candidates
         windows=json.loads((ROOT/'tests/fixtures/recorded_window_descriptors.json').read_text())
@@ -57,6 +63,10 @@ class WindowGeometryTests(unittest.TestCase):
         regions=select_side_regions(np.asarray(triangles),windows[0],{'origin':[0,0,0],'direction':[0,0,1]},.3)
         self.assertEqual(len(regions),4)
         self.assertTrue(all(r['status']=='candidate' for r in regions))
+        narrow=select_side_regions(np.asarray(triangles),windows[0],{'origin':[0,0,0],'direction':[0,0,1]},.3,axial_band_mm=.3)
+        self.assertTrue(all(r['triangle_count'] for r in narrow))
+        for region in narrow:
+            self.assertTrue(np.all(abs(np.asarray(triangles)[region['triangle_indices']].mean(axis=1)[:,2])<=.3))
 
     def test_two_alternating_types_have_independent_phase_and_period(self):
         windows=[]
@@ -75,6 +85,30 @@ class WindowGeometryTests(unittest.TestCase):
 
 @unittest.skipUnless(EXE.is_file(),'Build the surface worker first')
 class SurfaceWorkerTests(unittest.TestCase):
+    def test_three_main_fitted_surfaces_form_a_solid_without_a_fake_fourth_wall(self):
+        vertices=np.array([[3.,-1.],[5.,0.],[3.,1.]])
+        reports=[]
+        for side in range(3):
+            first=vertices[side];last=vertices[(side+1)%3]
+            points=[[*(first+(last-first)*t),z] for t in np.linspace(0,1,5) for z in np.linspace(-.5,.5,5)]
+            path=self.root/f'triangle{side}.json';_save(path,{'samples':points,'region_id':str(side),'source_sha256':'test'})
+            result=self.adapter.run({'schema_version':1,'operation':'fit_window_surface','task_id':'test','unit':'mm',
+                'stl_path':'mesh.stl','samples_path':str(path),'tolerance_mm':.05})
+            reports.append(next(a['path'] for a in result.result['artifacts'] if a['type']=='window_report'))
+        result=self.adapter.run({'schema_version':1,'operation':'build_window_cutter','task_id':'test','unit':'mm',
+            'stl_path':'mesh.stl','surface_reports':reports,'axis':{'origin':[0,0,0],'direction':[0,0,1]},
+            'minimum_depth_mm':-3.,'maximum_depth_mm':3.,'tolerance_mm':.05,'fillet_radius_mm':0.})
+        self.assertEqual(result.result['metrics']['fitted_side_surface_count'],3)
+        self.assertEqual(result.result['metrics']['cap_face_count'],2)
+        self.assertAlmostEqual(result.result['metrics']['volume_mm3'],12.,places=4)
+    def test_increased_budget_keeps_fixed_tolerance(self):
+        from rim_reconstruction.window_tools import schemas
+        definition=next(d['function']['parameters']['properties'] for d in schemas() if d['function']['name']=='rim_fit_surface_patch')
+        self.assertEqual(definition['max_iterations']['maximum'],64)
+        self.assertEqual(definition['max_iterations']['default'],16)
+        self.assertEqual(definition['tolerance_mm']['maximum'],1.)
+        self.assertEqual(definition['tolerance_mm']['default'],.5)
+        self.assertIn('retry_from_call_directory',definition)
     def test_utf8_fit_error_contains_diagnostics(self):
         from rim_reconstruction.adapters.cpp_worker_adapter import WorkerError
         path=self.root/'invalid_samples.json';_save(path,{'samples':[[0,0,0]]*9,'region_id':'bad','source_sha256':'test'})
@@ -89,7 +123,7 @@ class SurfaceWorkerTests(unittest.TestCase):
         self.root=Path(self.temp.name).resolve()
         self.adapter=WindowWorkerAdapter(EXE,self.root/'calls',base_directory=ROOT,timeout_seconds=300)
 
-    def build_cutter(self,width=1.):
+    def build_cutter(self,width=1.,boundary_tolerance=None):
         paths=[]
         for side in range(4):
             pts=[]
@@ -100,15 +134,26 @@ class SurfaceWorkerTests(unittest.TestCase):
             response=self.adapter.run({'schema_version':1,'operation':'fit_window_surface','task_id':'test','unit':'mm',
                 'stl_path':str(self.root/'source.stl'),'samples_path':str(path),'tolerance_mm':.05})
             paths.append(next(a['path'] for a in response.result['artifacts'] if a['type']=='window_report'))
-        result=self.adapter.run({'schema_version':1,'operation':'build_window_cutter','task_id':'test','unit':'mm',
+        request={'schema_version':1,'operation':'build_window_cutter','task_id':'test','unit':'mm',
             'stl_path':str(self.root/'source.stl'),'surface_reports':paths,'axis':{'origin':[0,0,0],'direction':[0,0,1]},
-            'minimum_depth_mm':-3.,'maximum_depth_mm':3.,'tolerance_mm':.05,'fillet_radius_mm':0.})
+            'minimum_depth_mm':-3.,'maximum_depth_mm':3.,'tolerance_mm':.05,'fillet_radius_mm':0.}
+        if boundary_tolerance is not None:request['boundary_tolerance_mm']=boundary_tolerance
+        result=self.adapter.run(request)
         return result
 
     def test_real_four_face_fit_and_capped_solid(self):
         result=self.build_cutter()
         self.assertTrue(result.result['metrics']['closed_solid'])
         self.assertGreater(result.result['metrics']['volume_mm3'],0)
+        self.assertEqual(result.result['metrics']['method'],'four_fitted_surface_intersection')
+        self.assertEqual(result.result['metrics']['fitted_side_face_count'],4)
+        self.assertEqual(result.result['metrics']['cap_face_count'],2)
+        self.assertLessEqual(result.result['metrics']['maximum_boundary_sample_deviation_mm'],.05)
+
+    def test_boundary_tolerance_does_not_change_surface_fit_tolerance(self):
+        metrics=self.build_cutter(boundary_tolerance=1.).result['metrics']
+        self.assertEqual(metrics['fit_tolerances_mm'],[.05]*4)
+        self.assertEqual(metrics['boundary_tolerances_mm'],[1.]*4)
 
     def test_missing_region_fails_without_partial_success(self):
         from rim_reconstruction.adapters.cpp_worker_adapter import WorkerError

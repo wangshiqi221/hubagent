@@ -34,7 +34,7 @@ def build_window_loft_cutter(parameters,*,adapter=None):
 
 
 def show_spoke_objects(parameters):
-    _parameters(parameters,(),('document_name','object_names'))
+    _parameters(parameters,(),('document_name','object_names','isolate'))
     App,doc=_context(parameters)
     names=parameters.get('object_names')
     if names is not None and (not isinstance(names,list) or not names or any(not isinstance(n,str) for n in names)):
@@ -43,6 +43,10 @@ def show_spoke_objects(parameters):
         if o.TypeId=='PartDesign::Body' or hasattr(o,'SourceCutterReport') or hasattr(o,'SourceBlank') or o.TypeId=='Part::Cut']
     if not objects or any(o is None or not hasattr(o,'Shape') or o.Shape.isNull() for o in objects):
         raise ValueError('No displayable reconstruction objects; list document objects first')
+    if type(parameters.get('isolate',False)) is not bool:raise ValueError('isolate must be a boolean')
+    if App.GuiUp and parameters.get('isolate'):
+        for obj in doc.Objects:
+            if hasattr(obj,'Shape'):obj.ViewObject.Visibility=False
     from ..cad.view_utils import show_objects
     displayed=show_objects(doc,objects,translucent=[o.Name for o in objects if hasattr(o,'SourceCutterReport')])
     return {'status':'success','document_name':doc.Name,'object_names':[o.Name for o in objects],
@@ -57,6 +61,10 @@ def import_window_cutter(parameters,*,adapter=None):
     p=_read_json(path.parent/'cutter_provenance.json',1024*1024)
     if _hash(path)!=p['report_sha256'] or _hash(path.parent/'geometry.brep')!=p['geometry_sha256']:raise ValueError('Cutter artifact was modified')
     data=_manifest(p['analysis_path'],adapter);report=_read_json(path,adapter.max_artifact_bytes)
+    if (report.get('loft_path') or report.get('method') not in ('four_fitted_surface_intersection','fitted_surface_intersection')
+            or report.get('fitted_side_surface_count') not in (3,4) or report.get('fitted_side_face_count',0)<report.get('fitted_side_surface_count',99)
+            or report.get('cap_face_count')!=2 or report.get('side_surface_continuity')!='C1'):
+        raise ValueError('Rebuild this cutter through CadAgent from three or four actual fitted surfaces and two caps; legacy loft/prism cutters are not permitted.')
     if data.get('windows') and data.get('outer_radius_mm'):
         from ..geometry.window_regions import is_spoke_window
         observed=next(w for w in data['windows'] if w['window_id']==p['window_id'])
@@ -94,6 +102,13 @@ def _objects(parameters,doc):
     if not getattr(source,'SourceFitPath','') and getattr(blank,'Tip',None) is not None:source=blank.Tip
     fit_path=getattr(source,'SourceFitPath','')
     if not fit_path:raise ValueError('Blank must have a reconstruction SourceFitPath')
+    report_path=getattr(cutter,'SourceCutterReport','')
+    if report_path:
+        report=_read_json(Path(report_path),16*1024*1024)
+        if (report.get('loft_path') or report.get('method') not in ('four_fitted_surface_intersection','fitted_surface_intersection')
+                or report.get('fitted_side_surface_count') not in (3,4) or report.get('fitted_side_face_count',0)<report.get('fitted_side_surface_count',99)
+                or report.get('cap_face_count')!=2 or report.get('side_surface_continuity')!='C1'):
+            raise ValueError('This cutter is not certified as actual fitted main surfaces and two caps; rebuild it through CadAgent')
     request=_read_json(Path(fit_path).resolve().parent.parent/'request.json',1024*1024)
     axis=json.loads(cutter.AxisRecord)
     if any(abs(a-b)>1e-6 for a,b in zip(axis['origin'],request['axis']['origin'])) or any(abs(a-b)>1e-8 for a,b in zip(axis['direction'],request['axis']['direction'])):
@@ -163,26 +178,13 @@ def validate_window_pattern(parameters,*,adapter=None):
     from .window_service import _positive
     tolerance=_positive(parameters.get('match_tolerance_mm',.5),'match_tolerance_mm')
     data=_manifest(cutter.SourceAnalysisPath,adapter)
+    source_report=_read_json(Path(cutter.SourceCutterReport),adapter.max_artifact_bytes)
+    sides=source_report['fitted_side_surface_count']
     source=next(w for w in data['windows'] if w['window_id']==cutter.WindowId)
     from ..geometry.transverse_sections import load_stl
     import numpy as np
     import Part
-    instances=[];selected=set();tri=None
-    cutter_provenance=_read_json(Path(cutter.SourceCutterReport).parent/'cutter_provenance.json',1024*1024)
-    loft_record=None;loft_sections=None
-    if cutter_provenance.get('loft_path'):
-        loft_path=Path(cutter_provenance['loft_path'])
-        if _hash(loft_path)!=loft_path.with_suffix('.sha256').read_text(encoding='ascii').strip():raise ValueError('Loft sections changed')
-        loft_record=_read_json(loft_path,adapter.max_artifact_bytes)
-        if _angles(parameters['angles_degrees'])==[0.]:
-            loft_sections=[[layer] for layer in loft_record['layers']]
-        else:
-            from ..geometry.transverse_sections import section_triangles
-            from ..geometry.window_regions import window_candidates
-            tri=load_stl(data['source_stl'])
-            sections=section_triangles(tri,data['axis']['origin'],data['axis']['direction'],[l['depth_mm'] for l in loft_record['layers']])
-            loft_sections=[window_candidates([s],data['outer_radius_mm'],spoke_only=True) for s in sections['sections']]
-    else:tri=load_stl(data['source_stl'])
+    tri=load_stl(data['source_stl']);instances=[];selected=set()
     for angle in _angles(parameters['angles_degrees']):
         target_angle=(source['angle_degrees']+angle)%360
         distance=lambda w:min(abs(w['angle_degrees']-target_angle),360-abs(w['angle_degrees']-target_angle))
@@ -190,28 +192,26 @@ def validate_window_pattern(parameters,*,adapter=None):
         shape=cutter.Shape.copy();shape.rotate(App.Vector(*axis['origin']),App.Vector(*axis['direction']),angle)
         shell=Part.makeShell(shape.Faces);distances=[]
         regions=[r for r in data['regions'] if r['window_id']==target['window_id']]
-        for region in ([] if loft_record else regions):
+        if sides==3:
+            from ..geometry.window_regions import main_wall_indices
+            main_sides=set(main_wall_indices(target));regions=[r for r in regions if r['side_index'] in main_sides]
+        for region in regions:
             ids=region['triangle_indices']
             if not ids:continue
             sample_ids=np.asarray(ids)[np.linspace(0,len(ids)-1,min(16,len(ids)),dtype=int)]
             for point in tri[sample_ids].mean(axis=1):
                 distances.append(float(shell.distToShape(Part.Vertex(App.Vector(*point)))[0]))
-        matched_layers=0
-        if loft_record:
-            for candidates in loft_sections:
-                if not candidates:continue
-                observed=min(candidates,key=lambda w:abs((w['angle_degrees']-target['angle_degrees']+180)%360-180))
-                if abs((observed['angle_degrees']-target['angle_degrees']+180)%360-180)>9:continue
-                matched_layers+=1
-                frame=observed['frame'];o=np.asarray(frame['origin']);u=np.asarray(frame['u_direction']);v=np.asarray(frame['v_direction'])
-                points=np.asarray(observed['boundary_uv']);points=points[np.linspace(0,len(points)-1,min(64,len(points)),dtype=int)]
-                for point in o+points[:,0,None]*u+points[:,1,None]*v:
-                    distances.append(float(shell.distToShape(Part.Vertex(App.Vector(*point)))[0]))
+        # Also verify the complete observed section, including a short corner
+        # transition not used as a main fitted wall. Omitting a fit must not hide
+        # geometric mismatch at that transition.
+        frame=target['frame'];o=np.asarray(frame['origin']);u=np.asarray(frame['u_direction']);v=np.asarray(frame['v_direction'])
+        boundary=np.asarray(target['boundary_uv']);boundary=boundary[np.linspace(0,len(boundary)-1,min(128,len(boundary)),dtype=int)]
+        for point in o+boundary[:,0,None]*u+boundary[:,1,None]*v:
+            distances.append(float(shell.distToShape(Part.Vertex(App.Vector(*point)))[0]))
         maximum=max(distances) if distances else None
         matched=(maximum is not None and maximum<=tolerance and distance(target)<=max(2.,90/max(len(data['windows']),1))
                  and target['window_id'] not in selected)
-        if loft_record:matched=matched and matched_layers==len(loft_sections)
-        else:matched=matched and len(regions)==4 and all(r['status']=='candidate' for r in regions)
+        matched=matched and len(regions)==sides and all(r['status']=='candidate' for r in regions)
         selected.add(target['window_id'])
         instances.append({'angle_degrees':angle,'target_window_id':target['window_id'],
             'maximum_sample_distance_mm':maximum,'sample_count':len(distances),'matched':matched})
@@ -253,69 +253,8 @@ def create_window_cutter_set(parameters,*,adapter=None):
 
 
 def extend_window_cutter_through_disc(parameters,*,adapter=None):
-    """Clear the inner disc behind an observed window, protecting the rear rim.
-
-    A separating annulus must be completely empty in the actual blank. This is
-    checked by a native Boolean, rather than guessing a percentage of radius.
-    """
-    _parameters(parameters,('blank_name','cutter_name'),('document_name',))
-    App,doc=_context(parameters);blank,cutter,axis=_objects(parameters,doc);adapter=_adapter(adapter)
-    import Part
-    import numpy as np
-    from .window_service import _save
-    import uuid
-    report_path=Path(cutter.SourceCutterReport);report=_read_json(report_path,adapter.max_artifact_bytes)
-    if report.get('axial_scope')!='observed_front_window_band':raise ValueError('Use an observed front-window loft before disc clearance')
-    provenance=_read_json(report_path.parent/'cutter_provenance.json',1024*1024)
-    if provenance['report_sha256']!=_hash(report_path) or provenance['geometry_sha256']!=_hash(report_path.parent/'geometry.brep'):
-        raise ValueError('Source cutter artifact changed')
-    origin=App.Vector(*axis['origin']);direction=App.Vector(*axis['direction']);cap=report['required_axial_range_mm'][1]
-    radial=direction.cross(App.Vector(1,0,0) if abs(direction.x)<.9 else App.Vector(0,1,0));radial.normalize()
-    scale=axis['outer_radius_mm'];section=blank.Shape.section(Part.makePlane(4*scale,4*scale,origin+direction*cap,direction))
-    radii=[]
-    for edge in section.Edges:
-        points=edge.discretize(Number=12)
-        values=[((p-origin)-direction*((p-origin).dot(direction))).Length for p in points]
-        if values and max(values)-min(values)<1e-3:radii.append(float(np.mean(values)))
-    radii=sorted(set(round(r,5) for r in radii if r>1e-4))
-    gaps=[(b-a,a,b) for a,b in zip(radii[:-1],radii[1:])
-          if b-a>2 and not blank.Shape.isInside(origin+direction*cap+radial*((a+b)/2),1e-7,False)]
-    depths=[(v.Point-origin).dot(direction) for v in blank.Shape.Vertexes];end=max(depths)+5;height=end-cap
-    separator=None
-    for width,a,b in sorted(gaps,reverse=True):
-        radius=(a+b)/2;delta=min(1.,width*.1)
-        outer=Part.makeCylinder(radius+delta,height,origin+direction*cap,direction)
-        inner=Part.makeCylinder(radius-delta,height,origin+direction*cap,direction)
-        band=outer.cut(inner)
-        if blank.Shape.common(band).Volume<1e-6:separator=radius;break
-    if separator is None:raise ValueError('No empty annulus separates the rear disc from the rim; cannot safely extend this cutter')
-    cap_faces=[]
-    for face in cutter.Shape.Faces:
-        center=face.CenterOfMass
-        if abs((center-origin).dot(direction)-cap)>1e-4:continue
-        normal=face.normalAt(*face.Surface.parameter(center))
-        if abs(normal.dot(direction))>1-1e-7:cap_faces.append(face)
-    if len(cap_faces)!=1:raise ValueError('Cannot uniquely identify the measured cutter back cap')
-    cylinder=Part.makeCylinder(separator,height+2,origin+direction*(cap-1),direction)
-    clipped=cap_faces[0].common(cylinder)
-    if not clipped.Faces:raise ValueError('Window back cap does not reach the inner-disc clearance region')
-    shape=cutter.Shape
-    for face in clipped.Faces:shape=shape.fuse(face.extrude(direction*height))
-    shape=shape.removeSplitter()
-    from ..cad.window_features import solid
-    if not solid(shape):raise ValueError('Disc clearance did not produce one valid cutting solid')
-    root=adapter.call_root/'window_clearance'/('clearance_'+uuid.uuid4().hex);root.mkdir(parents=True)
-    geometry=root/'geometry.brep';shape.exportBrep(str(geometry));path=root/'geometry.json'
-    output={**report,'method':'observed_loft_with_separated_disc_clearance','axial_scope':'disc_with_rim_protection',
-            'geometry_path':str(geometry),'volume_mm3':shape.Volume,
-            'required_axial_range_mm':[report['required_axial_range_mm'][0],end],
-            'rear_clearance':{'separator_radius_mm':separator,'start_depth_mm':cap,'end_depth_mm':end,
-                              'empty_separator_band_verified':True,'source_fit_path':getattr(blank.Tip if getattr(blank,'Tip',None) else blank,'SourceFitPath','')},
-            'warning':'The inner part of the back cap is extended through the disc; an empty annulus geometrically separates it from the rear rim.'}
-    _save(path,output);_save(root/'cutter_provenance.json',{**provenance,'report_sha256':_hash(path),'geometry_sha256':_hash(geometry)})
-    imported=import_window_cutter({'document_name':doc.Name,'cutter_report':str(path)},adapter=adapter)
-    if App.GuiUp:cutter.ViewObject.Visibility=False
-    return {**imported,'cutter_report':str(path),'rear_clearance':output['rear_clearance']}
+    """Explicit rejection for legacy calls; do not append replacement walls."""
+    raise ValueError('Disabled: additional clearance prisms are not part of the required four fitted-surface cutter')
 
 
 def cut_window_patterns(parameters):
@@ -327,6 +266,11 @@ def cut_window_patterns(parameters):
     if blank is None or not solid(blank.Shape):raise ValueError('Invalid blank')
     patterns=[doc.getObject(name) for name in names]
     if any(p is None or not hasattr(p,'SourceBlank') or p.SourceBlank!=blank for p in patterns):raise ValueError('Patterns must be validated against the same blank')
+    for pattern in patterns:
+        sources=[pattern.SourceCutter] if hasattr(pattern,'SourceCutter') else list(getattr(pattern,'Links',[]))
+        if not sources:raise ValueError('Pattern has no verifiable fitted-surface cutters')
+        for cutter in sources:
+            _objects({'blank_name':blank.Name,'cutter_name':cutter.Name},doc)
     doc.openTransaction('Cut spoke windows')
     created=[];current=blank
     try:

@@ -13,7 +13,7 @@ int main()
     if (!fitSurfacePatch(samples,0.1,&result,&error)) {
         std::cerr << error.toStdString(); return 3;
     }
-    if (result.surface.IsNull() || result.maximumDeviation>0.1) return 4;
+    if (result.surface.IsNull() || result.maximumDeviation>0.1 || result.method.isEmpty()) return 4;
     const auto original=result.surface;
     double oldU0,oldU1,oldV0,oldV1;
     original->Bounds(oldU0,oldU1,oldV0,oldV1);
