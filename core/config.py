@@ -54,6 +54,7 @@ class Config:
         self.MAX_TOKENS: int = 0
         self.TEMPERATURE: float = 0.1
         self.MAX_ITERATIONS: int = 0
+        self.RECONSTRUCTION_MAX_ITERATIONS: int = 100
         self.MAX_SNAPSHOTS: int = 0
         self.MAX_CONTEXT_TOKENS: int = 0
         self.LLM_TIMEOUT: int = 0
@@ -77,6 +78,8 @@ class Config:
         self.MAX_TOKENS = _parse_int(self._cfg["MAX_TOKENS"], 4096)
         self.TEMPERATURE = _parse_float(self._cfg["TEMPERATURE"], 0.1)
         self.MAX_ITERATIONS = _parse_int(os.environ.get("MAX_ITERATIONS", ""), 20)
+        self.RECONSTRUCTION_MAX_ITERATIONS = max(1, min(1000, _parse_int(
+            os.environ.get("RECONSTRUCTION_MAX_ITERATIONS", ""), 100)))
         self.MAX_SNAPSHOTS = _parse_int(os.environ.get("MAX_SNAPSHOTS", ""), 10)
         self.MAX_CONTEXT_TOKENS = _parse_int(os.environ.get("MAX_CONTEXT_TOKENS", ""), 24000)
         self.LLM_TIMEOUT = _parse_int(os.environ.get("LLM_TIMEOUT", ""), 180)
@@ -135,6 +138,7 @@ MODEL_NAME = _default_config.MODEL_NAME
 MAX_TOKENS = _default_config.MAX_TOKENS
 TEMPERATURE = _default_config.TEMPERATURE
 MAX_ITERATIONS = _default_config.MAX_ITERATIONS
+RECONSTRUCTION_MAX_ITERATIONS = _default_config.RECONSTRUCTION_MAX_ITERATIONS
 MAX_SNAPSHOTS = _default_config.MAX_SNAPSHOTS
 MAX_CONTEXT_TOKENS = _default_config.MAX_CONTEXT_TOKENS
 LLM_TIMEOUT = _default_config.LLM_TIMEOUT
@@ -152,6 +156,7 @@ def _refresh_constants():
     """Re-derive module-level constants from the default Config instance."""
     global API_BASE_URL, API_KEY, MODEL_NAME, MAX_TOKENS, TEMPERATURE
     global MAX_ITERATIONS, MAX_SNAPSHOTS, MAX_CONTEXT_TOKENS, LLM_TIMEOUT
+    global RECONSTRUCTION_MAX_ITERATIONS
     global VALIDATE_VOLUME_THRESHOLD, VALIDATE_DIMENSION_THRESHOLD
     global VISION_API_BASE_URL, VISION_API_KEY, VISION_MODEL_NAME
     global VISION_MAX_TOKENS, VISION_TEMPERATURE, VISION_TIMEOUT
@@ -162,6 +167,7 @@ def _refresh_constants():
     MAX_TOKENS = _default_config.MAX_TOKENS
     TEMPERATURE = _default_config.TEMPERATURE
     MAX_ITERATIONS = _default_config.MAX_ITERATIONS
+    RECONSTRUCTION_MAX_ITERATIONS = _default_config.RECONSTRUCTION_MAX_ITERATIONS
     MAX_SNAPSHOTS = _default_config.MAX_SNAPSHOTS
     MAX_CONTEXT_TOKENS = _default_config.MAX_CONTEXT_TOKENS
     LLM_TIMEOUT = _default_config.LLM_TIMEOUT

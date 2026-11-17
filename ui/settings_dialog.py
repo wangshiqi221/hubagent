@@ -215,10 +215,17 @@ def _build_main_llm_tab(parent: SettingsDialog) -> QtWidgets.QWidget:
     api_form.addRow("Max Tokens:", parent.spin_max_tokens)
 
     parent.spin_max_iter = QtWidgets.QSpinBox()
-    parent.spin_max_iter.setRange(1, 50)
+    parent.spin_max_iter.setRange(1, 1000)
     parent.spin_max_iter.setToolTip("Maximum agent loop iterations")
     parent.spin_max_iter.setFixedWidth(120)
     api_form.addRow("Max Iterations:", parent.spin_max_iter)
+    parent.spin_reconstruction_max_iter = QtWidgets.QSpinBox()
+    parent.spin_reconstruction_max_iter.setRange(1, 1000)
+    parent.spin_reconstruction_max_iter.setToolTip(
+        "Agent call budget for full rim/spoke reconstruction, including geometry retries. Default: 100."
+    )
+    parent.spin_reconstruction_max_iter.setFixedWidth(120)
+    api_form.addRow("重建调用轮数上限:", parent.spin_reconstruction_max_iter)
 
     # Test Connection button inside the group
     btn_row = QtWidgets.QHBoxLayout()
@@ -541,6 +548,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.edit_model.setText(_config.MODEL_NAME)
         self.spin_max_tokens.setValue(_config.MAX_TOKENS)
         self.spin_max_iter.setValue(_config.MAX_ITERATIONS)
+        self.spin_reconstruction_max_iter.setValue(_config.RECONSTRUCTION_MAX_ITERATIONS)
 
         # Match provider preset (by url + model)
         matched = False
@@ -734,6 +742,7 @@ class SettingsDialog(QtWidgets.QDialog):
             "MODEL_NAME": model,
             "MAX_TOKENS": str(self.spin_max_tokens.value()),
             "MAX_ITERATIONS": str(self.spin_max_iter.value()),
+            "RECONSTRUCTION_MAX_ITERATIONS": str(self.spin_reconstruction_max_iter.value()),
         }
 
         if self.chk_vision_enabled.isChecked():

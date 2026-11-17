@@ -89,7 +89,7 @@ class _PanelStatusMixin:
         elapsed = time.time() - self._status_phase_start if self._status_phase_start else 0
         elapsed_str = self._format_elapsed(elapsed)
         iter_str = (
-            f"  [{self._loop.iteration}/{_config.MAX_ITERATIONS}]"
+            f"  [{self._loop.iteration}/{self._loop.max_iterations}]"
             if self._loop and self._loop.iteration > 0
             else ""
         )

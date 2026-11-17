@@ -10,6 +10,45 @@ from tests.test_rim_workflow import response
 
 
 class PipelineTests(unittest.TestCase):
+    def test_reconstruction_budget_crosses_old_limit_and_stops_at_own_limit(self):
+        import core.config as config
+        from unittest.mock import patch
+        with patch.object(config,'MAX_ITERATIONS',30),patch.object(config,'RECONSTRUCTION_MAX_ITERATIONS',100):
+            for workflow in ('rim_reconstruction','spoke_reconstruction'):
+                loop=AgentLoop(AgentController(ChatSession()),'',workflow=workflow)
+                loop._iteration=30
+                action=loop.prepare_llm_call()
+                self.assertEqual(action.kind,LoopActionKind.CALL_LLM)
+                self.assertEqual(action.iteration,31)
+                self.assertEqual(loop.max_iterations,100)
+                loop._iteration=99
+                self.assertEqual(loop.prepare_llm_call().kind,LoopActionKind.CALL_LLM)
+                action=loop.prepare_llm_call()
+                self.assertEqual(action.kind,LoopActionKind.FINISH)
+                self.assertIn('100',action.summary)
+            ordinary=AgentLoop(AgentController(ChatSession()),'')
+            ordinary._iteration=30
+            self.assertEqual(ordinary.prepare_llm_call().kind,LoopActionKind.FINISH)
+
+    def test_user_can_stop_before_reconstruction_budget_is_used(self):
+        self.loop.request_stop()
+        self.assertEqual(self.loop.prepare_llm_call().kind,LoopActionKind.FINISH)
+        self.assertEqual(self.loop.iteration,1)
+
+    def test_reconstruction_config_defaults_override_and_refresh(self):
+        import os
+        import core.config as config
+        from unittest.mock import patch
+        with patch.dict(os.environ,{'RECONSTRUCTION_MAX_ITERATIONS':''}):
+            cfg=config.Config()
+            self.assertEqual(cfg.RECONSTRUCTION_MAX_ITERATIONS,100)
+            os.environ['RECONSTRUCTION_MAX_ITERATIONS']='150'
+            cfg.refresh()
+            self.assertEqual(cfg.RECONSTRUCTION_MAX_ITERATIONS,150)
+            os.environ['RECONSTRUCTION_MAX_ITERATIONS']='invalid'
+            cfg.refresh()
+            self.assertEqual(cfg.RECONSTRUCTION_MAX_ITERATIONS,100)
+
     def setUp(self):
         self.loop = AgentLoop(AgentController(ChatSession()), "", workflow="rim_reconstruction")
         self.action = self.loop.start("多角度分析，自动选择并重建回转实体")

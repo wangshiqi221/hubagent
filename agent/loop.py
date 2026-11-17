@@ -135,6 +135,12 @@ class AgentLoop:
         return self._iteration
 
     @property
+    def max_iterations(self) -> int:
+        """Full reconstruction has its own budget; ordinary CAD keeps its limit."""
+        return (_config.RECONSTRUCTION_MAX_ITERATIONS if self._rim_pipeline is not None
+                else _config.MAX_ITERATIONS)
+
+    @property
     def mode(self) -> str:
         return self._mode
 
@@ -241,10 +247,10 @@ class AgentLoop:
                 parts.append(REF_QUALITY_PASSED_WARN)
 
         # --- Phase-aware: approaching iteration limit ---
-        if self._iteration >= _config.MAX_ITERATIONS - 2 and self._iteration > 0:
+        if self._iteration >= self.max_iterations - 2 and self._iteration > 0:
             parts.append(
                 REF_ITERATION_URGENCY.format(
-                    max_iter=_config.MAX_ITERATIONS,
+                    max_iter=self.max_iterations,
                     current=self._iteration,
                 )
             )
@@ -260,11 +266,11 @@ class AgentLoop:
                 iterations=self._iteration,
             )
 
-        if self._iteration >= _config.MAX_ITERATIONS:
+        if self._iteration >= self.max_iterations:
             return LoopAction(
                 kind=LoopActionKind.FINISH,
                 success=False,
-                summary=(self._rim_pipeline.limit_summary(_config.MAX_ITERATIONS)
+                summary=(self._rim_pipeline.limit_summary(self.max_iterations)
                          if self._rim_pipeline else "Max iterations reached."),
                 iterations=self._iteration,
             )
@@ -303,7 +309,7 @@ class AgentLoop:
         trimmed = len(messages) < original_count
 
         log_info(
-            f"LLM call iteration {self._iteration}/{_config.MAX_ITERATIONS}, "
+            f"LLM call iteration {self._iteration}/{self.max_iterations}, "
             f"mode={self._mode}, {len(messages)} messages"
         )
 
