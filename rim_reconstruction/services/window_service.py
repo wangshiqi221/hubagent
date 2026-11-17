@@ -133,7 +133,7 @@ def fit_window_surface(parameters,*,adapter=None,cancel_event=None):
     from ..geometry.transverse_sections import load_stl
     region=regions[0];tri=load_stl(data['source_stl'],cancel_event)[region['triangle_indices']]
     points=np.concatenate([tri.reshape(-1,3),tri.mean(axis=1),((tri+np.roll(tri,-1,axis=1))/2).reshape(-1,3)])
-    tolerance=_positive(parameters.get('tolerance_mm',.1),'tolerance_mm')
+    tolerance=_positive(parameters.get('tolerance_mm',.5),'tolerance_mm')
     budget=parameters.get('max_iterations',8)
     if type(budget)!=int or not 1<=budget<=32:raise ValueError('max_iterations must be 1..32')
     sample_path=Path(parameters['analysis_path']).parent/('samples_'+uuid.uuid4().hex+'.json')
