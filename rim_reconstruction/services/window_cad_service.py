@@ -21,7 +21,26 @@ def list_spoke_objects(parameters):
     App,doc=_context(parameters)
     return {'status':'success','document_name':doc.Name,'objects':[{'name':o.Name,'label':o.Label,
         'type':o.TypeId,'source_fit_path':getattr(o,'SourceFitPath',None),'window_id':getattr(o,'WindowId',None),
+        'visible':bool(o.ViewObject.Visibility) if App.GuiUp else None,
+        'bbox_mm':{'minimum':[o.Shape.BoundBox.XMin,o.Shape.BoundBox.YMin,o.Shape.BoundBox.ZMin],
+                   'maximum':[o.Shape.BoundBox.XMax,o.Shape.BoundBox.YMax,o.Shape.BoundBox.ZMax]},
         'solid_count':len(o.Shape.Solids),'volume_mm3':float(o.Shape.Volume)} for o in doc.Objects if hasattr(o,'Shape') and not o.Shape.isNull()]}
+
+
+def show_spoke_objects(parameters):
+    _parameters(parameters,(),('document_name','object_names'))
+    App,doc=_context(parameters)
+    names=parameters.get('object_names')
+    if names is not None and (not isinstance(names,list) or not names or any(not isinstance(n,str) for n in names)):
+        raise ValueError('object_names must be a nonempty list of actual object names')
+    objects=[doc.getObject(n) for n in names] if names else [o for o in doc.Objects
+        if o.TypeId=='PartDesign::Body' or hasattr(o,'SourceCutterReport') or hasattr(o,'SourceBlank') or o.TypeId=='Part::Cut']
+    if not objects or any(o is None or not hasattr(o,'Shape') or o.Shape.isNull() for o in objects):
+        raise ValueError('No displayable reconstruction objects; list document objects first')
+    from ..cad.view_utils import show_objects
+    displayed=show_objects(doc,objects,translucent=[o.Name for o in objects if hasattr(o,'SourceCutterReport')])
+    return {'status':'success','document_name':doc.Name,'object_names':[o.Name for o in objects],
+            'view_updated':displayed,'warnings':[] if displayed else ['FreeCAD GUI is unavailable; geometry was not modified']}
 
 
 def import_window_cutter(parameters,*,adapter=None):
@@ -43,7 +62,11 @@ def import_window_cutter(parameters,*,adapter=None):
         for name,value in (('SourceCutterReport',str(path)),('SourceAnalysisPath',p['analysis_path']),
                            ('WindowId',p['window_id']),('AxisRecord',json.dumps(data['axis']))):
             obj.addProperty('App::PropertyString',name,'Source');setattr(obj,name,value)
-        doc.recompute();doc.commitTransaction()
+        doc.recompute()
+        from ..cad.view_utils import show_objects
+        display=[o for o in doc.Objects if o.TypeId=='PartDesign::Body']+[obj]
+        show_objects(doc,display,translucent=[obj.Name])
+        doc.commitTransaction()
     except Exception:doc.abortTransaction();raise
     return {'status':'success','document_name':doc.Name,'cutter_name':obj.Name,'window_id':p['window_id'],
         'solid_count':1,'volume_mm3':shape.Volume,'axis':data['axis']}

@@ -32,6 +32,46 @@ class RimPipeline:
             return None
         return "rim_fit_profile" if not self.fit else "rim_build_revolution"
 
+    def restore_history(self, messages):
+        """Recover tool references on explicit continuation, never invent outputs.
+
+        Services still validate artifacts and current document objects on use.
+        Historical final cuts do not satisfy the new turn's completion gate.
+        """
+        from types import SimpleNamespace
+        calls={};checkpoint=None
+        for message in messages:
+            if message.get('role')=='assistant':
+                for call in message.get('tool_calls') or []:
+                    calls[call.get('id')]=call.get('function',{})
+            elif message.get('role')=='tool':
+                function=calls.get(message.get('tool_call_id'),{})
+                if not function.get('name','').startswith('rim_'):continue
+                content=message.get('content','')
+                if not isinstance(content,str):continue
+                try:data=json.JSONDecoder().raw_decode(content.lstrip())[0]
+                except (ValueError,TypeError):continue
+                if not isinstance(data,dict):continue
+                error=data.get('error') or {}
+                if isinstance(error,dict) and error.get('code') in ('RIM_STAGE_INVALID','BATCH_REQUIRES_SEPARATE_ROUNDS'):continue
+                self.record(SimpleNamespace(tool_name=function['name'],tool_args=function.get('arguments','{}'),
+                    result=json.dumps(data,ensure_ascii=False),is_error=data.get('status')!='success'))
+                if function['name']=='rim_build_revolution' and self.solid:
+                    checkpoint={key:getattr(self,key) for key in ('inspection','axis','section','analysis','fit','solid')}
+        # A cancelled retry does not delete the previous document's Body. Recover
+        # its references only while the same inspected model and axis still apply.
+        if checkpoint and not self.solid and self.axis and self.inspection:
+            same_run=(checkpoint['axis']['call_directory']==self.axis['call_directory']
+                      and checkpoint['inspection']['task_id']==self.inspection['task_id'])
+            previous=checkpoint['inspection'].get('metrics',{})
+            current=self.inspection.get('metrics',{})
+            same_observation=(previous.get('source_path') and
+                all(previous.get(k)==current.get(k) for k in ('source_path','file_size_bytes','bounding_box','triangle_count'))
+                and checkpoint['axis'].get('metrics',{}).get('axis_candidate')==self.axis.get('metrics',{}).get('axis_candidate'))
+            if same_run or same_observation:
+                for key,value in checkpoint.items():setattr(self,key,value)
+        self.spoke_solid=None
+
     def request_context(self):
         """逐轮注入精简的确定性状态，不包含任何几何点列。"""
         references = {}
@@ -60,7 +100,7 @@ class RimPipeline:
                 f'{completed}；{pending}。成功产物与错误详情保留在当前会话中。' + detail)
 
     def allowed_tools(self):
-        names = {"rim_inspect_stl"}
+        names = {"rim_inspect_stl", "rim_list_spoke_objects", "rim_show_spoke_objects"}
         if self.inspection:
             names.add("rim_estimate_axis")
         if self.axis:

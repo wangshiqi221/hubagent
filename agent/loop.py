@@ -176,6 +176,9 @@ class AgentLoop:
 
     #准备用户指令和系统提示词后调用prepare_llm_call
     def start(self, user_text: str) -> LoopAction:
+        if (self._rim_pipeline is not None and '.stl' not in user_text.lower()
+                and any(word in user_text for word in ('继续','接着','恢复','看不到','显示已有'))):
+            self._rim_pipeline.restore_history(self._controller.session.get_messages())
         self._evaluation_requested = requests_evaluation(user_text)
         if self._evaluation_requested:
             self._mode = "tool_calling"
@@ -391,7 +394,8 @@ class AgentLoop:
                     # upstream reconstruction changes still require a new turn.
                     independent={"rim_fit_surface_patch","rim_build_window_cutting_solid",
                         "rim_import_window_cutter","rim_preview_window_pattern","rim_validate_window_pattern",
-                        "rim_create_cutter_pattern","rim_list_spoke_objects","rim_analyze_window_pattern"}
+                        "rim_create_cutter_pattern","rim_list_spoke_objects","rim_show_spoke_objects",
+                        "rim_refine_surface_region","rim_analyze_window_pattern"}
                     if len(calls)>8 or any(tc['function']['name'] not in independent for tc in calls):
                         results=[ToolExecution(tc['function']['name'],tc['function'].get('arguments','{}'),tc['id'],'',
                             json.dumps({'status':'error','error':{'code':'BATCH_REQUIRES_SEPARATE_ROUNDS',

@@ -143,13 +143,31 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(self.loop._check_quality_gate()[0])
         self.solid()
         self.record("rim_inspect_stl", {"status": "error"})
-        self.assertEqual(self.pipeline.allowed_tools(), {"rim_inspect_stl"})
+        self.assertEqual(self.pipeline.allowed_tools(), {"rim_inspect_stl","rim_list_spoke_objects","rim_show_spoke_objects"})
         self.assertFalse(self.loop._check_quality_gate()[0])
 
     def test_only_one_tool_per_step(self):
         call = {"id": "id", "function": {"name": "rim_inspect_stl", "arguments": "{}"}}
         action = self.loop.handle_stream_done(response(calls=[call, call], reason="tool_calls"), False)
         self.assertFalse(action.success)
+
+    def test_display_tools_available_before_reconstruction(self):
+        self.assertIsNone(self.pipeline.validate_call('rim_list_spoke_objects','{}'))
+        self.assertIsNone(self.pipeline.validate_call('rim_show_spoke_objects','{}'))
+
+    def test_explicit_continuation_restores_history_but_new_mesh_does_not(self):
+        session=ChatSession()
+        outputs=[('rim_inspect_stl',{'status':'success','operation':'inspect_stl','task_id':'t','call_directory':'/inspect'}),
+                 ('rim_estimate_axis',{'status':'success','operation':'estimate_axis','task_id':'t','call_directory':'/axis'})]
+        for i,(name,data) in enumerate(outputs):
+            session.add_assistant_message({'tool_calls':[{'id':str(i),'function':{'name':name,'arguments':'{}'}}]})
+            session.add_tool_result(str(i),json.dumps(data)+'\nquality annotation')
+        loop=AgentLoop(AgentController(session),'',workflow='spoke_reconstruction')
+        loop.start('继续重建')
+        self.assertEqual(loop._rim_pipeline.axis['call_directory'],'/axis')
+        fresh=AgentLoop(AgentController(session),'',workflow='spoke_reconstruction')
+        fresh.start('继续重建 E:/new.stl')
+        self.assertIsNone(fresh._rim_pipeline.axis)
 
     def test_limit_reports_actual_stage_and_failure(self):
         self.sections();self.analysis();self.fit();self.solid()

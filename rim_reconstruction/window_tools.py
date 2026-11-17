@@ -10,6 +10,7 @@ BACKGROUND={
  'rim_fit_surface_patch':'fit_window_surface',
  'rim_build_window_cutting_solid':'build_window_cutter'}
 MAIN={
+ 'rim_show_spoke_objects':'show_spoke_objects',
  'rim_list_spoke_objects':'list_spoke_objects',
  'rim_import_window_cutter':'import_window_cutter',
  'rim_preview_window_pattern':'preview_window_pattern',
@@ -66,6 +67,8 @@ def schemas():
     add('rim_build_window_cutting_solid','Build an intermediate closed cutter from four distinct fitted supports of the same window. Does not array or subtract.',
         {'surface_reports':{'type':'array','items':text,'minItems':4,'maxItems':4,'uniqueItems':True},'fillet_radius_mm':{'type':'number','minimum':0},'axial_margin_mm':{'type':'number','exclusiveMinimum':0}},['surface_reports'])
     add('rim_list_spoke_objects','List real document/object IDs, solids and reconstruction sources before selecting the blank.',{'document_name':text},[])
+    add('rim_show_spoke_objects','Show existing reconstruction objects and fit the camera to their bounds. Keeps geometry placement unchanged; available without reconstruction stage prerequisites.',
+        {'document_name':text,'object_names':{'type':'array','items':text,'minItems':1}},[])
     add('rim_import_window_cutter','Import a verified C++ cutter BREP into FreeCAD and validate the solid.',{'document_name':text,'cutter_report':text},['cutter_report'])
     props={'document_name':text,'blank_name':text,'cutter_name':text,'angles_degrees':{'type':'array','items':number,'minItems':1,'maxItems':360,'uniqueItems':True}}
     add('rim_preview_window_pattern','Test each angular cutter intersection and single cut without modifying the blank. Not an engineering approval.',props,['blank_name','cutter_name','angles_degrees'])

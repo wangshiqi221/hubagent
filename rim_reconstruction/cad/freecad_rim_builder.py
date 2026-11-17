@@ -211,6 +211,8 @@ def build_rim_from_fit(fit_path, *, doc=None, origin=None, axis_direction=None,
         if App.GuiUp:
             sketch.Visibility = False
             revolution.Visibility = True
+            from .view_utils import show_objects
+            show_objects(doc, [body])
         doc.commitTransaction()
     except Exception:
         doc.abortTransaction()

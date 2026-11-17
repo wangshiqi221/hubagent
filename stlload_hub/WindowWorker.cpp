@@ -70,7 +70,11 @@ QJsonObject executeWindowOperation(const QJsonObject& request,const QDir& base,s
         WindowSolidOptions options;options.axisOrigin=point(axis["origin"]);options.axisDirection=gp_Dir(direction.X(),direction.Y(),direction.Z());
         options.minimumDepth=request["minimum_depth_mm"].toDouble();options.maximumDepth=request["maximum_depth_mm"].toDouble();
         options.fitTolerance=request["tolerance_mm"].toDouble(.1);options.filletRadius=request["fillet_radius_mm"].toDouble(0);
-        WindowSolidResult solid;require(buildWindowCuttingSolid(faces,points,options,&solid,&error),error);require(isValidCuttingSolid(solid.solid,&error),error);
+        WindowSolidResult solid;
+        if(!buildWindowCuttingSolid(faces,points,options,&solid,&error))
+            throw WindowWorkerFailure("CUTTER_CLOSURE_FAILED",error,QJsonObject{{"diagnostics",solid.diagnostics},
+                {"minimum_depth_mm",options.minimumDepth},{"maximum_depth_mm",options.maximumDepth}});
+        require(isValidCuttingSolid(solid.solid,&error),error);
         shapeWrite(solid.solid,geometry);GProp_GProps props;BRepGProp::VolumeProperties(solid.solid,props);
         data["source_sha256"]=hash;data["closed_solid"]=true;data["solid_count"]=1;data["volume_mm3"]=props.Mass();
         data["fillet_applied"]=solid.filletApplied;data["warning"]=solid.warning;data["axis"]=axis;

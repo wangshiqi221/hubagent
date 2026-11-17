@@ -184,17 +184,21 @@ bool buildWindowCuttingSolid(const std::array<TopoDS_Face,4>& faces,
             }
             TopTools_IndexedMapOfShape solids;TopExp::MapShapes(volume.Shape(),TopAbs_SOLID,solids);
             std::vector<TopoDS_Solid> candidates;
+            int validCount=0,contributionCount=0;
             for(int i=1;i<=solids.Extent();++i) {
                 auto solid=TopoDS::Solid(solids(i));
                 if(!BRepLib::OrientClosedSolid(solid) || !isValidCuttingSolid(solid)) continue;
+                ++validCount;
                 std::set<int> contributions;
                 for(TopExp_Explorer ex(solid,TopAbs_FACE);ex.More();ex.Next()) contributions.insert(sourceId(ex.Current(),history));
                 bool all=true;for(int id=0;id<6;++id) if(!contributions.count(id)) all=false;
                 if(!all || contributions.count(-1)) continue;
+                ++contributionCount;
                 if(!followsSamples(solid,samples,options.fitTolerance*2)) continue;
                 candidates.push_back(solid);
             }
-            if(candidates.empty()) {lastStage=QStringLiteral("裁剪/封口检查：未找到同时由四个侧面和两个端盖围成的有效实体。");continue;}
+            if(candidates.empty()) {lastStage=QStringLiteral("裁剪/封口检查：未找到同时由四个侧面和两个端盖围成的有效实体。候选体 %1；有效体 %2；六面贡献完整 %3；采样检查通过 0。")
+                .arg(solids.Extent()).arg(validCount).arg(contributionCount);continue;}
             if(candidates.size()>1) {
                 std::vector<TopoDS_Solid> inside;
                 for(const auto& candidate:candidates) {
