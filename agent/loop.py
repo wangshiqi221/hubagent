@@ -372,12 +372,24 @@ class AgentLoop:
         if self._workflow in ("rim_sections", "rim_reconstruction", "spoke_reconstruction"):
             calls = assistant_msg.get("tool_calls") or []
             if calls:
-                # 轮辋逆向扩展：完整流程一次只执行一个步骤，下一步须等待真实返回。
-                if self._rim_pipeline is not None and len(calls) != 1:
-                    return self.handle_error("完整轮辋流程每轮只允许一个工具调用")
                 allowed_names = {t["function"]["name"] for t in RIM_TOOL_DEFINITIONS}
                 if any(tc.get("function", {}).get("name") not in allowed_names for tc in calls):
                     return self.handle_error("rim_sections 工作流只允许已声明的轮辋工具")
+                if self._rim_pipeline is not None and len(calls)>1:
+                    ids=[tc.get("id") for tc in calls]
+                    if any(not isinstance(i,str) or not i for i in ids) or len(set(ids))!=len(ids):
+                        return self.handle_error("批量工具调用必须包含不同的有效tool_call_id")
+                    # The panel already executes a queue serially. Only permit
+                    # operations whose inputs were available before this reply;
+                    # upstream reconstruction changes still require a new turn.
+                    independent={"rim_fit_surface_patch","rim_build_window_cutting_solid",
+                        "rim_import_window_cutter","rim_preview_window_pattern","rim_validate_window_pattern",
+                        "rim_create_cutter_pattern","rim_list_spoke_objects","rim_analyze_window_pattern"}
+                    if len(calls)>8 or any(tc['function']['name'] not in independent for tc in calls):
+                        results=[ToolExecution(tc['function']['name'],tc['function'].get('arguments','{}'),tc['id'],'',
+                            json.dumps({'status':'error','error':{'code':'BATCH_REQUIRES_SEPARATE_ROUNDS',
+                            'message':'本批未执行。最多批量提交8个已有输入的独立曲面/窗口工具；检查、轴线、截面、候选、回转及最终切割须分别等待真实结果。'}},ensure_ascii=False),True) for tc in calls]
+                        return self.handle_tool_results(results)
                 return LoopAction(kind=LoopActionKind.EXECUTE_TOOLS, tool_calls=calls)
             if finish_reason != "stop":
                 return self.handle_error("截面响应未正常完成，请检查模型的 Tool Calling 支持")

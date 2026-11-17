@@ -19,6 +19,17 @@ def panel_methods(*names):
 
 
 class PanelCancellationTests(unittest.TestCase):
+    def test_multiple_main_thread_tools_are_dispatched_serially_in_order(self):
+        panel=panel_methods('_run_next_tool')()
+        panel._loop=SimpleNamespace(stopped=False,handle_tool_results=Mock(return_value='finished'))
+        panel._tool_queue=[{'id':str(i),'function':{'name':'rim_import_window_cutter','arguments':json.dumps({'cutter_report':str(i)})}} for i in range(2)]
+        panel._tool_executions=[];panel._controller=None;panel._status_set=Mock();panel._record_tool_result=Mock();panel._execute_action=Mock()
+        dispatch=Mock(return_value='{"status":"success"}')
+        panel._run_next_tool.__func__.__globals__['dispatch_tool']=dispatch
+        panel._run_next_tool()
+        self.assertEqual([json.loads(c.args[1])['cutter_report'] for c in dispatch.call_args_list],['0','1'])
+        self.assertEqual(panel._record_tool_result.call_count,2)
+        panel._execute_action.assert_called_once_with('finished')
     def test_revolution_dispatches_in_main_thread_without_background_worker(self):
         panel = panel_methods("_run_next_tool")()
         panel._loop = SimpleNamespace(stopped=False, handle_tool_results=Mock(return_value="finished"))

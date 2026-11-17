@@ -112,6 +112,28 @@ class PipelineTests(unittest.TestCase):
         action = self.loop.handle_stream_done(response(calls=[call, call], reason="tool_calls"), False)
         self.assertFalse(action.success)
 
+    def test_four_independent_surface_fits_are_queued_with_original_ids(self):
+        self.sections()
+        calls=[{'id':f'fit_{i}','function':{'name':'rim_fit_surface_patch','arguments':json.dumps({'analysis_path':'existing.json','region_id':str(i)})}} for i in range(4)]
+        action=self.loop.handle_stream_done(response(calls=calls,reason='tool_calls'),False)
+        self.assertEqual(action.kind,LoopActionKind.EXECUTE_TOOLS)
+        self.assertEqual(action.tool_calls,calls)
+
+    def test_dependent_batch_returns_tool_errors_and_allows_model_to_retry(self):
+        calls=[{'id':'inspect','function':{'name':'rim_inspect_stl','arguments':'{}'}},
+               {'id':'axis','function':{'name':'rim_estimate_axis','arguments':'{}'}}]
+        action=self.loop.handle_stream_done(response(calls=calls,reason='tool_calls'),False)
+        self.assertEqual(action.kind,LoopActionKind.CALL_LLM)
+        messages=self.loop._controller.session.get_messages()
+        replies=[m for m in messages if m.get('role')=='tool']
+        self.assertEqual([m['tool_call_id'] for m in replies],['inspect','axis'])
+        self.assertTrue(all('BATCH_REQUIRES_SEPARATE_ROUNDS' in m['content'] for m in replies))
+
+    def test_batch_size_limit_cannot_execute_unbounded_operations(self):
+        calls=[{'id':str(i),'function':{'name':'rim_fit_surface_patch','arguments':'{}'}} for i in range(9)]
+        action=self.loop.handle_stream_done(response(calls=calls,reason='tool_calls'),False)
+        self.assertEqual(action.kind,LoopActionKind.CALL_LLM)
+
 
 if __name__ == "__main__":
     unittest.main()
